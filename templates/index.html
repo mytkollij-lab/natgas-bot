@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>NatGas Weekly Trend Bot</title>
+    <title>NatGas Weather-Aware Trend Bot</title>
     <style>
         :root {
             --bg: #020617;
@@ -42,7 +42,7 @@
         }
 
         .title-block h1 {
-            font-size: 1.9rem;
+            font-size: 1.8rem;
             margin: 0;
             display: flex;
             align-items: center;
@@ -71,6 +71,21 @@
         }
 
         .timestamp span { color: var(--accent); }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 16px;
+        }
+
+        @media (min-width: 880px) {
+            .grid-2 {
+                grid-template-columns: 1.1fr 0.9fr;
+            }
+            .grid-2-even {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
 
         .card, .card-soft {
             border-radius: 14px;
@@ -118,27 +133,26 @@
             display: inline-flex;
             align-items: center;
             gap: 6px;
-            padding: 4px 12px;
+            padding: 3px 10px;
             border-radius: 999px;
-            font-size: 0.9rem;
-            font-weight: 700;
-            letter-spacing: 0.03em;
-            text-transform: uppercase;
+            font-size: 0.8rem;
+            font-weight: 600;
+            letter-spacing: 0.02em;
         }
         .badge-up {
-            background: rgba(34,197,94,0.16);
+            background: rgba(34,197,94,0.12);
             color: #bbf7d0;
-            border: 1px solid rgba(34,197,94,0.7);
+            border: 1px solid rgba(34,197,94,0.6);
         }
         .badge-down {
-            background: rgba(248,113,113,0.2);
+            background: rgba(248,113,113,0.16);
             color: #fecaca;
-            border: 1px solid rgba(248,113,113,0.8);
+            border: 1px solid rgba(248,113,113,0.7);
         }
         .badge-flat {
-            background: rgba(148,163,184,0.2);
+            background: rgba(148,163,184,0.18);
             color: #e5e7eb;
-            border: 1px solid rgba(148,163,184,0.8);
+            border: 1px solid rgba(148,163,184,0.7);
         }
 
         .pill {
@@ -153,26 +167,6 @@
         .pill-risk {
             background: rgba(234,179,8,0.18);
             color: var(--yellow);
-        }
-
-        .big-number {
-            font-size: 1.8rem;
-            font-weight: 700;
-        }
-
-        .grid {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 16px;
-        }
-
-        @media (min-width: 880px) {
-            .grid-2 {
-                grid-template-columns: 1.1fr 0.9fr;
-            }
-            .grid-2-even {
-                grid-template-columns: 1fr 1fr;
-            }
         }
 
         table {
@@ -229,17 +223,44 @@
         button:hover { filter: brightness(1.05); }
 
         ul.small { padding-left: 18px; }
+
         .small { font-size: 0.8rem; color: var(--muted); }
+
+        .metric-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 18px;
+            font-size: 0.86rem;
+        }
+        .metric-row span.value {
+            color: var(--accent);
+            font-weight: 600;
+        }
 
         .split-line {
             height: 1px;
             background: linear-gradient(to right, transparent, rgba(148,163,184,0.5), transparent);
-            margin: 8px 0 10px;
+            margin: 6px 0 8px;
         }
 
-        .weekly-bias-up { color: var(--green); font-weight: 600; }
-        .weekly-bias-down { color: var(--red); font-weight: 600; }
-        .weekly-bias-choppy { color: var(--muted); font-weight: 600; }
+        .mode-pill {
+            font-size: 0.75rem;
+            padding: 2px 8px;
+            border-radius: 999px;
+            background: rgba(148,163,184,0.16);
+            color: var(--muted);
+            border: 1px solid rgba(148,163,184,0.5);
+        }
+
+        .checkbox-row {
+            margin-top: 6px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .checkbox-row input[type="checkbox"] {
+            width: auto;
+        }
     </style>
 </head>
 <body>
@@ -247,17 +268,19 @@
     <header>
         <div class="title-block">
             <h1>
-                NatGas Weekly Trend Bot
-                <span class="title-pill">Trend signal + week outlook</span>
+                NatGas Trend Bot
+                <span class="title-pill">Tech + Weather + Cross-market</span>
             </h1>
             <div class="title-sub">
-                Focus on the main trend: BUY / SELL / NO TRADE for NatGas, plus a projected bias for the rest of the trading week.
+                Live directional bias (BUY/SELL/NO TRADE) using NatGas price history,
+                crude oil linkage, and US + Europe weather.
             </div>
         </div>
         <div class="timestamp">
             {% if timestamp %}
-                <div>Last market update: <span>{{ timestamp }}</span> UTC</div>
+                <div>Market data: <span>{{ timestamp }}</span> UTC</div>
             {% endif %}
+            <div class="mode-pill">{{ mode_label }}</div>
         </div>
     </header>
 
@@ -268,149 +291,225 @@
         </div>
     {% endif %}
 
-    <!-- MAIN TREND SIGNAL (BIG) -->
-    <div class="card">
-        <h2><span class="dot"></span> Main trend signal</h2>
+    {% if weather_error %}
+        <div class="card error">
+            <h2><span class="dot"></span> Weather data warning</h2>
+            <p>{{ weather_error }}</p>
+        </div>
+    {% endif %}
 
-        {% if signal %}
-            <p>
-                {% if signal.direction == "UP" %}
-                    <span class="badge badge-up">BUY / LONG BIAS</span>
-                {% elif signal.direction == "DOWN" %}
-                    <span class="badge badge-down">SELL / SHORT BIAS</span>
-                {% else %}
-                    <span class="badge badge-flat">NO CLEAR EDGE / NO TRADE</span>
-                {% endif %}
-                <span class="pill pill-risk">Not financial advice</span>
-            </p>
-
-            <p>
-                <span class="label">Confidence now:</span>
-                <span class="big-number">{{ (signal.confidence * 100) | round(1) }}%</span>
-            </p>
-
+    <div class="grid grid-2">
+        <div class="card">
+            <h2><span class="dot"></span> Market snapshot</h2>
             {% if last_price %}
-                <p>
-                    <span class="label">NatGas last price:</span>
-                    <span style="color: var(--accent); font-weight: 600;">
-                        {{ last_price | round(4) }}
-                    </span>
-                </p>
+                <div class="metric-row">
+                    <span class="label">NatGas:</span>
+                    <span class="value">{{ last_price | round(4) }}</span>
+                    {% if feats %}
+                        <span class="label">Crude Oil:</span>
+                        <span class="value">{{ feats.cl_price | round(4) }}</span>
+                    {% endif %}
+                </div>
+            {% else %}
+                <p>No NatGas price available right now.</p>
             {% endif %}
 
-            {% if weather_info %}
-                <p class="small">
-                    {{ weather_info.impact_text }}
-                </p>
-            {% endif %}
-
-            {% if cl_impact %}
-                <p class="small">
-                    Crude oil: {{ cl_impact.trend_label }}
-                    ({{ cl_impact.cl_ret_3d_pct | round(2) }}% over 3 days).<br>
-                    {{ cl_impact.impact_text }}
-                </p>
-            {% endif %}
-
-            <div class="split-line"></div>
-
-            <p>
-                <span class="label">Stop-loss level:</span> {{ signal.stop_loss | round(4) }}<br>
-                <span class="label">Take-profit level:</span> {{ signal.take_profit | round(4) }}
-            </p>
-            <p class="small">
-                Stop distance:
-                {{ (signal.stop_pct * 100) | round(2) }}% ·
-                TP distance:
-                {{ (signal.tp_pct * 100) | round(2) }}%<br>
-                Risk is sized using volatility / ATR, not a fixed number.
-            </p>
-        {% else %}
-            <p>No signal available right now.</p>
-        {% endif %}
-    </div>
-
-    <!-- WEEKLY OUTLOOK -->
-    <div class="card-soft" style="margin-top: 12px;">
-        <h2><span class="dot"></span> Weekly outlook (projection)</h2>
-
-        {% if weekly_outlook and signal %}
-            <p class="small">
-                This outlook is based on the current trend, volatility, NatGas vs oil, and weather.
-                Confidence is strongest near today and fades further into the week.
-            </p>
-
-            <table>
-                <tr>
-                    <th>Period</th>
-                    <th>Bias</th>
-                    <th>Conf.</th>
-                    <th>Comment</th>
-                </tr>
-                {% for day in weekly_outlook %}
-                    <tr>
-                        <td>{{ day.label }}</td>
-                        <td>
-                            {% if day.bias == "UP" %}
-                                <span class="weekly-bias-up">UP / Bullish</span>
-                            {% elif day.bias == "DOWN" %}
-                                <span class="weekly-bias-down">DOWN / Bearish</span>
-                            {% else %}
-                                <span class="weekly-bias-choppy">CHOPPY / RANGE</span>
-                            {% endif %}
-                        </td>
-                        <td>{{ (day.confidence * 100) | round(1) }}%</td>
-                        <td class="small">{{ day.note }}</td>
-                    </tr>
-                {% endfor %}
-            </table>
-
-            <p class="small">
-                This is a projection, not a guarantee. Sudden news or data releases can break the pattern at any time,
-                especially in NatGas.
-            </p>
-        {% else %}
-            <p>No weekly outlook available (missing signal).</p>
-        {% endif %}
-    </div>
-
-    <!-- LOWER GRID: MARKET SNAPSHOT + POSITION SIZE + HELP -->
-    <div class="grid grid-2-even" style="margin-top: 14px;">
-        <div class="card-soft">
-            <h2><span class="dot"></span> Market snapshot & tech</h2>
             {% if feats %}
-                <p>
-                    <span class="label">Short / medium / long EMAs:</span><br>
-                    EMA 10: {{ feats.ema_fast | round(4) }}<br>
-                    EMA 30: {{ feats.ema_slow | round(4) }}<br>
-                    EMA 50: {{ feats.ema_long | round(4) }}
-                </p>
-                <p>
-                    <span class="label">RSI 14:</span> {{ feats.rsi | round(2) }}<br>
-                    <span class="label">24h volatility:</span> {{ (feats.vol_24h * 100) | round(2) }}%<br>
-                    <span class="label">ATR 14:</span> {{ feats.atr_14 | round(4) }}
-                    ({{ ((feats.atr_14 / (last_price or 1)) * 100) | round(2) }}% of price)
-                </p>
-                <p>
-                    <span class="label">Bollinger position:</span>
-                    {{ (feats.bb_pos * 100) | round(1) }}% of band range<br>
-                    <span class="label">MACD line / hist:</span>
-                    {{ feats.macd_line | round(4) }} / {{ feats.macd_hist | round(4) }}
-                </p>
+                <div class="split-line"></div>
                 <p>
                     <span class="label">NG / CL ratio z-score:</span>
-                    {{ feats.ng_cl_ratio_z | round(2) }}
+                    <span class="value">{{ feats.ng_cl_ratio_z | round(2) }}</span>
                     <span class="small">
-                        (how cheap / expensive NatGas is vs crude oil over recent history)
+                        {% if feats.ng_cl_ratio_z > 1 %}
+                            (NatGas expensive vs oil)
+                        {% elif feats.ng_cl_ratio_z < -1 %}
+                            (NatGas cheap vs oil)
+                        {% else %}
+                            (Near normal vs oil)
+                        {% endif %}
                     </span>
                 </p>
-            {% else %}
-                <p>No indicators available.</p>
+
+                {% if cl_impact %}
+                    <p>
+                        <span class="label">Crude trend (3 days):</span>
+                        {{ cl_impact.trend_label }}
+                        ({{ cl_impact.cl_ret_3d_pct | round(2) }}%)
+                    </p>
+                    <p class="small">
+                        {{ cl_impact.impact_text }}
+                    </p>
+                {% endif %}
             {% endif %}
         </div>
 
+        <div class="card">
+            <h2><span class="dot"></span> Trade signal</h2>
+            {% if signal %}
+                <p>
+                    <span class="label">Direction:</span>
+                    {% if signal.direction == "UP" %}
+                        <span class="badge badge-up">UP · Bullish bias</span>
+                    {% elif signal.direction == "DOWN" %}
+                        <span class="badge badge-down">DOWN · Bearish bias</span>
+                    {% else %}
+                        <span class="badge badge-flat">FLAT · No clear edge</span>
+                    {% endif %}
+                </p>
+
+                <p>
+                    <span class="label">Suggested action:</span>
+                    {% if signal.direction == "UP" %}
+                        <span style="color: var(--green); font-weight: 600;">BUY / go LONG</span>
+                    {% elif signal.direction == "DOWN" %}
+                        <span style="color: var(--red); font-weight: 600;">SELL / go SHORT</span>
+                    {% else %}
+                        <span style="color: var(--muted); font-weight: 600;">NO TRADE / stay out</span>
+                    {% endif %}
+                    <span class="pill pill-risk">Not financial advice</span>
+                </p>
+
+                <p>
+                    <span class="label">Confidence:</span>
+                    <span class="value">{{ (signal.confidence * 100) | round(1) }}%</span>
+                </p>
+
+                {% if weather_info %}
+                    <p>
+                        <span class="label">Weather impact:</span>
+                        <span class="small">{{ weather_info.impact_text }}</span>
+                    </p>
+                {% endif %}
+
+                <div class="split-line"></div>
+
+                <p>
+                    <span class="label">Stop-loss:</span> {{ signal.stop_loss | round(4) }}<br>
+                    <span class="label">Take-profit:</span> {{ signal.take_profit | round(4) }}
+                </p>
+                <p class="small">
+                    Stop distance:
+                    {{ (signal.stop_pct * 100) | round(2) }}% ·
+                    TP distance:
+                    {{ (signal.tp_pct * 100) | round(2) }}%
+                </p>
+
+                <p class="small">
+                    Signal combines: EMAs, RSI, Bollinger, ATR, MACD, NG/Oil ratio,
+                    plus US + EU weather (HDD & CDD) for the next 7 days.
+                </p>
+            {% else %}
+                <p>No signal available.</p>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if feats %}
+        <div class="card-soft" style="margin-top: 10px;">
+            <h2><span class="dot"></span> Technical view</h2>
+            <table>
+                <tr>
+                    <th>Indicator</th>
+                    <th>Value</th>
+                    <th>Interpretation</th>
+                </tr>
+                <tr>
+                    <td>EMA 10</td>
+                    <td>{{ feats.ema_fast | round(4) }}</td>
+                    <td rowspan="3">
+                        Short = EMA10, Medium = EMA30, Long = EMA50.<br>
+                        If EMA10 &gt; EMA30 &gt; EMA50 → trending up.<br>
+                        If EMA10 &lt; EMA30 &lt; EMA50 → trending down.
+                    </td>
+                </tr>
+                <tr>
+                    <td>EMA 30</td>
+                    <td>{{ feats.ema_slow | round(4) }}</td>
+                </tr>
+                <tr>
+                    <td>EMA 50</td>
+                    <td>{{ feats.ema_long | round(4) }}</td>
+                </tr>
+                <tr>
+                    <td>RSI 14</td>
+                    <td>{{ feats.rsi | round(2) }}</td>
+                    <td>
+                        &lt; 30 = oversold, &gt; 70 = overbought.<br>
+                        Mid-range = balanced.
+                    </td>
+                </tr>
+                <tr>
+                    <td>24h volatility</td>
+                    <td>{{ (feats.vol_24h * 100) | round(2) }}%</td>
+                    <td>Average percentage move over the last 24 hours.</td>
+                </tr>
+                <tr>
+                    <td>ATR 14</td>
+                    <td>
+                        {{ feats.atr_14 | round(4) }}
+                        ({{ ((feats.atr_14 / (last_price or 1)) * 100) | round(2) }}%)
+                    </td>
+                    <td>Average True Range; used for dynamic stop sizing.</td>
+                </tr>
+                <tr>
+                    <td>Bollinger position</td>
+                    <td>{{ (feats.bb_pos * 100) | round(1) }}%</td>
+                    <td>
+                        ~0% = near lower band (cheap), ~100% = near upper band (expensive).
+                    </td>
+                </tr>
+                <tr>
+                    <td>MACD line</td>
+                    <td>{{ feats.macd_line | round(4) }}</td>
+                    <td rowspan="2">
+                        MACD &gt; 0 with positive histogram = bullish momentum.<br>
+                        MACD &lt; 0 with negative histogram = bearish momentum.
+                    </td>
+                </tr>
+                <tr>
+                    <td>MACD histogram</td>
+                    <td>{{ feats.macd_hist | round(4) }}</td>
+                </tr>
+            </table>
+        </div>
+    {% endif %}
+
+    {% if weather_info %}
         <div class="card-soft">
-            <h2><span class="dot"></span> Position size & usage</h2>
+            <h2><span class="dot"></span> Weather (US + Europe, next 7 days)</h2>
+            <table>
+                <tr>
+                    <th>Region</th>
+                    <th>Current °C</th>
+                    <th>HDD 7d</th>
+                    <th>CDD 7d</th>
+                </tr>
+                {% for loc in weather_info.locations %}
+                    <tr>
+                        <td>{{ loc.name }}</td>
+                        <td>
+                            {% if loc.temp is not none %}
+                                {{ loc.temp | round(1) }}
+                            {% else %}
+                                ?
+                            {% endif %}
+                        </td>
+                        <td>{{ loc.hdd7 | round(1) }}</td>
+                        <td>{{ loc.cdd7 | round(1) }}</td>
+                    </tr>
+                {% endfor %}
+            </table>
+            <p class="small">
+                HDD (Heating Degree Days) ↑ = colder vs 18°C → higher heating demand.<br>
+                CDD (Cooling Degree Days) ↑ = hotter vs 18°C → higher cooling / power demand.<br>
+                These feed into the confidence of BUY/SELL.
+            </p>
+        </div>
+    {% endif %}
+
+    <div class="grid grid-2-even">
+        <div class="card">
+            <h2><span class="dot"></span> Position size & data mode</h2>
             <form method="post">
                 <label>
                     Account balance:
@@ -422,30 +521,41 @@
                     <input type="number" step="0.1" name="risk_pct"
                            value="{{ risk_pct }}">
                 </label>
-                <button type="submit">Recalculate position size</button>
+                <div class="checkbox-row small">
+                    <input type="checkbox" name="extended_mode"
+                           {% if extended_mode %}checked{% endif %}>
+                    <span>Use extended data (more history & weather, slower)</span>
+                </div>
+                <button type="submit">Recalculate &amp; refresh</button>
             </form>
 
             {% if position_size %}
                 <p style="margin-top:8px;">
                     <span class="label">Suggested position size (units):</span>
-                    <span style="color: var(--accent); font-weight: 600;">
-                        {{ position_size | round(2) }}
-                    </span>
+                    <span class="value">{{ position_size | round(2) }}</span>
                 </p>
             {% endif %}
-
             <p class="small" style="margin-top:6px;">
                 Position size = (account × risk%) ÷ stop distance.<br>
-                You still decide your leverage, lots, and exact order on the broker.
+                You still choose your broker leverage, lots and margin.
             </p>
+            <p class="small" style="margin-top:4px;">
+                FAST mode: 60 days of data, key regions, cached for ~5 minutes.<br>
+                EXTENDED mode: 120 days + all regions (heavier).
+            </p>
+        </div>
 
-            <p class="small" style="margin-top:6px;">
-                How to use this bot:
-            </p>
+        <div class="card">
+            <h2><span class="dot"></span> How to read this</h2>
             <ul class="small">
-                <li>Use the <b>Main trend signal</b> as your primary decision helper.</li>
-                <li>Use the <b>Weekly outlook</b> to decide if you want to hold for days or just scalp.</li>
-                <li>Never treat this as guaranteed income – NatGas is extremely volatile.</li>
+                <li><b>BUY</b> = bias long NatGas (UP).</li>
+                <li><b>SELL</b> = bias short NatGas (DOWN).</li>
+                <li><b>NO TRADE</b> = edge not strong enough.</li>
+                <li>Market side: EMAs, RSI, volatility, ATR, MACD, NG vs Oil.</li>
+                <li>Crude side: 3-day trend + NG/CL ratio for cross-commodity impact.</li>
+                <li>Weather side: US + EU HDD & CDD (current & next 7 days).</li>
+                <li>Weather and crude impact are already blended into the confidence %.</li>
+                <li>Use this as a helper, not a guarantee of profit.</li>
             </ul>
         </div>
     </div>
