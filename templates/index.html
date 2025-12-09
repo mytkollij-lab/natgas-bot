@@ -6,7 +6,7 @@
     <style>
         body {
             font-family: Arial, sans-serif;
-            max-width: 900px;
+            max-width: 1000px;
             margin: 20px auto;
             padding: 10px;
         }
@@ -18,7 +18,7 @@
             grid-template-columns: 1fr;
             gap: 15px;
         }
-        @media (min-width: 800px) {
+        @media (min-width: 900px) {
             .grid-2 {
                 grid-template-columns: 1fr 1fr;
             }
@@ -88,8 +88,15 @@
 
     {% if error_msg %}
         <div class="card error">
-            <strong>Error fetching data or generating signal:</strong><br>
+            <strong>Error fetching market data:</strong><br>
             {{ error_msg }}
+        </div>
+    {% endif %}
+
+    {% if weather_error %}
+        <div class="card error">
+            <strong>Weather warning:</strong><br>
+            {{ weather_error }}
         </div>
     {% endif %}
 
@@ -135,16 +142,31 @@
                         <span class="badge badge-flat">FLAT / NO CLEAR EDGE</span>
                     {% endif %}
                 </p>
+                <p>
+                    <span class="label">Suggested action:</span>
+                    {% if signal.direction == "UP" %}
+                        BUY / go LONG
+                    {% elif signal.direction == "DOWN" %}
+                        SELL / go SHORT
+                    {% else %}
+                        NO TRADE / stay out
+                    {% endif %}
+                </p>
                 <p><span class="label">Confidence:</span> {{ (signal.confidence * 100) | round(1) }}%</p>
+                {% if weather_info %}
+                    <p><span class="label">Weather impact:</span> {{ weather_info.impact_text }}</p>
+                {% endif %}
                 <p><span class="label">Stop-loss:</span> {{ signal.stop_loss | round(4) }}</p>
                 <p><span class="label">Take-profit:</span> {{ signal.take_profit | round(4) }}</p>
                 <p><span class="label">Stop distance:</span> {{ (signal.stop_pct * 100) | round(2) }}%</p>
                 <p><span class="label">TP distance:</span> {{ (signal.tp_pct * 100) | round(2) }}%</p>
                 <p class="small">
-                    The signal combines EMAs, RSI, Bollinger Bands, ATR, MACD and the NatGas/Oil ratio.
+                    Signal combines:<br>
+                    • EMAs, RSI, Bollinger, ATR, MACD, NG/Oil ratio<br>
+                    • US + Europe weather (now + next 7 days, HDD & CDD)
                 </p>
             {% else %}
-                <p>No signal available (maybe data error above).</p>
+                <p>No signal available.</p>
             {% endif %}
         </div>
     </div>
@@ -219,6 +241,39 @@
         </div>
     {% endif %}
 
+    {% if weather_info %}
+        <div class="card">
+            <h2>Weather (US + Europe, next 7 days)</h2>
+            <table>
+                <tr>
+                    <th>Region</th>
+                    <th>Current °C</th>
+                    <th>HDD 7d</th>
+                    <th>CDD 7d</th>
+                </tr>
+                {% for loc in weather_info.locations %}
+                    <tr>
+                        <td>{{ loc.name }}</td>
+                        <td>
+                            {% if loc.temp is not none %}
+                                {{ loc.temp | round(1) }}
+                            {% else %}
+                                ?
+                            {% endif %}
+                        </td>
+                        <td>{{ loc.hdd7 | round(1) }}</td>
+                        <td>{{ loc.cdd7 | round(1) }}</td>
+                    </tr>
+                {% endfor %}
+            </table>
+            <p class="small">
+                HDD (Heating Degree Days) ↑ = colder than 18°C → more heating demand.<br>
+                CDD (Cooling Degree Days) ↑ = hotter than 18°C → more cooling demand.<br>
+                Both feed into the signal's confidence.
+            </p>
+        </div>
+    {% endif %}
+
     <div class="grid grid-2">
         <div class="card">
             <h2>Position size calculator</h2>
@@ -242,18 +297,19 @@
             {% endif %}
             <p class="small">
                 Position size = (account × risk%) ÷ stop distance.<br>
-                You still choose your own leverage and lot size on your broker.
+                You still choose leverage and lot size on your broker.
             </p>
         </div>
 
         <div class="card">
-            <h2>How to read this</h2>
+            <h2>How this bot thinks</h2>
             <ul class="small">
-                <li><b>Direction</b> = main idea (UP / DOWN / FLAT).</li>
-                <li><b>Confidence</b> = how strong the setup looks (40–95%).</li>
-                <li><b>SL/TP</b> = suggested levels based on ATR & volatility.</li>
-                <li><b>Indicators table</b> shows what the bot “sees” from past candles.</li>
-                <li><b>NG vs Oil</b> shows if NatGas looks expensive or cheap vs crude oil.</li>
+                <li><b>BUY</b> = bias long NatGas (UP).</li>
+                <li><b>SELL</b> = bias short NatGas (DOWN).</li>
+                <li><b>NO TRADE</b> = trend unclear or weak.</li>
+                <li>Uses price history (EMAs, RSI, volatility, MACD, NG vs Oil).</li>
+                <li>Uses US + Europe weather now & next 7 days (HDD & CDD).</li>
+                <li>Weather is already included in the confidence number.</li>
             </ul>
             <p class="small">
                 This is a helper tool, not guaranteed profit. Always manage your own risk.
