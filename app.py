@@ -1,17 +1,34 @@
 import math
 import json
+import time
 from urllib.request import urlopen
 
-import numpy as np
 import pandas as pd
 import yfinance as yf
 from flask import Flask, render_template, request
 
 app = Flask(__name__)
 
-# --------- WEATHER SETTINGS (US + EUROPE) --------- #
+# ========= SIMPLE IN-MEMORY CACHE (FAST MODE) ========= #
 
-WEATHER_LOCATIONS = [
+CACHE_TTL_SECONDS = 300  # 5 minutes
+
+market_cache = {"data": None, "error": None, "timestamp": 0.0}
+weather_cache = {"info": None, "error": None, "score": 0.0, "timestamp": 0.0}
+
+# ========= WEATHER REGIONS ========= #
+# FAST mode: key hubs only (fewer API calls)
+WEATHER_LOCATIONS_FAST = [
+    {"name": "US Northeast (New York)", "lat": 40.71, "lon": -74.00},
+    {"name": "US Midwest (Chicago)", "lat": 41.88, "lon": -87.63},
+    {"name": "US Texas (Houston)", "lat": 29.76, "lon": -95.37},
+    {"name": "UK (London)", "lat": 51.50, "lon": -0.12},
+    {"name": "Germany (Berlin)", "lat": 52.52, "lon": 13.40},
+    {"name": "Italy (Milan)", "lat": 45.46, "lon": 9.19},
+]
+
+# EXTENDED mode: all regions
+WEATHER_LOCATIONS_FULL = [
     # US
     {"name": "US Northeast (New York)", "lat": 40.71, "lon": -74.00},
     {"name": "US Midwest (Chicago)", "lat": 41.88, "lon": -87.63},
@@ -28,11 +45,12 @@ WEATHER_LOCATIONS = [
 ]
 
 
+# ========= WEATHER HELPERS ========= #
+
 def fetch_weather_for_location(lat: float, lon: float):
     """
     Use Open-Meteo free API to get next 7 days of hourly temperature.
-    Return: (current_temp, HDD_7d, CDD_7d)
-    HDD/CDD base = 18°C.
+    Return: (current_temp, HDD_7d, CDD_7d) with base 18°C.
     """
     base_temp = 18.0
     url = (
@@ -56,36 +74,26 @@ def fetch_weather_for_location(lat: float, lon: float):
     return current_temp, hdd, cdd
 
 
-def get_weather_summary():
+def compute_weather_summary(locations):
     """
-    Fetch weather for all US + EU locations.
-    Build a 'weather demand score' which we will use to adjust confidence.
-    Returns:
-      weather_info (dict) or None,
-      weather_error (str or None),
-      weather_score (float in [-0.25, +0.25])
+    Core weather logic used for both FAST and FULL modes.
     """
     locations_data = []
     total_hdd = 0.0
     total_cdd = 0.0
     count = 0
 
-    for loc in WEATHER_LOCATIONS:
+    for loc in locations:
         try:
             temp, hdd, cdd = fetch_weather_for_location(loc["lat"], loc["lon"])
             locations_data.append(
-                {
-                    "name": loc["name"],
-                    "temp": temp,
-                    "hdd7": hdd,
-                    "cdd7": cdd,
-                }
+                {"name": loc["name"], "temp": temp, "hdd7": hdd, "cdd7": cdd}
             )
             total_hdd += hdd
             total_cdd += cdd
             count += 1
         except Exception:
-            # Just skip this location if weather fails
+            # Skip this location if there is an error
             continue
 
     if count == 0:
@@ -140,7 +148,48 @@ def get_weather_summary():
     return weather_info, None, weather_score
 
 
-# ---------- INDICATORS USING PAST MARKET DATA ---------- #
+def get_weather_summary_fresh_fast():
+    """FAST mode: fewer regions."""
+    return compute_weather_summary(WEATHER_LOCATIONS_FAST)
+
+
+def get_weather_summary_full():
+    """EXTENDED mode: all regions, no cache (slower)."""
+    return compute_weather_summary(WEATHER_LOCATIONS_FULL)
+
+
+def get_weather_summary_cached_fast():
+    """
+    FAST mode with 5-minute cache so we don’t hit the API on every page load.
+    """
+    now = time.time()
+    age = now - weather_cache["timestamp"]
+    if age < CACHE_TTL_SECONDS and weather_cache["info"] is not None:
+        return (
+            weather_cache["info"],
+            weather_cache["error"],
+            weather_cache["score"],
+        )
+
+    info, err, score = get_weather_summary_fresh_fast()
+    weather_cache["info"] = info
+    weather_cache["error"] = err
+    weather_cache["score"] = score
+    weather_cache["timestamp"] = now
+    return info, err, score
+
+
+def get_weather_summary_mode(mode: str):
+    """
+    mode = "fast" or "extended"
+    """
+    if mode == "extended":
+        return get_weather_summary_full()
+    else:
+        return get_weather_summary_cached_fast()
+
+
+# ========= INDICATORS USING MARKET DATA ========= #
 
 def ema(series: pd.Series, window: int) -> pd.Series:
     return series.ewm(span=window, adjust=False).mean()
@@ -184,17 +233,21 @@ def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
     return macd_line, signal_line, hist
 
 
-# ---------- DATA FETCH + FEATURE BUILD (MARKET) ---------- #
+# ========= MARKET DATA + FEATURES ========= #
 
-def get_latest_features():
+def get_latest_features_fresh(period_days: int):
     """
-    Download recent NatGas (NG=F) and Crude Oil (CL=F) candles from Yahoo Finance
-    and calculate indicators that look at the past.
+    Download NatGas (NG=F) and Crude Oil (CL=F) candles and calculate indicators.
+    period_days: 60 for fast, 120 for extended.
     """
     try:
-        # 120 days of hourly candles
-        ng = yf.download("NG=F", period="120d", interval="1h")
-        cl = yf.download("CL=F", period="120d", interval="1h")
+        period_str = f"{period_days}d"
+        ng = yf.download(
+            "NG=F", period=period_str, interval="1h", progress=False, threads=False
+        )
+        cl = yf.download(
+            "CL=F", period=period_str, interval="1h", progress=False, threads=False
+        )
 
         if ng is None or ng.empty:
             return None, "No NatGas data received from Yahoo Finance."
@@ -251,6 +304,10 @@ def get_latest_features():
         ratio_std = ratio.rolling(50).std()
         df["ng_cl_ratio_z"] = (ratio - ratio_ma) / (ratio_std + 1e-9)
 
+        # Crude oil 3-day return (impact explanation)
+        # 3 days ≈ 72 hours
+        df["cl_ret_3d"] = cl_close.pct_change(72)
+
         df = df.dropna()
         if df.empty:
             return None, "Not enough candles to calculate extended indicators."
@@ -275,6 +332,7 @@ def get_latest_features():
             "macd_hist": float(latest["macd_hist"]),
             "cl_price": float(latest["cl_close"]),
             "ng_cl_ratio_z": float(latest["ng_cl_ratio_z"]),
+            "cl_ret_3d": float(latest["cl_ret_3d"]),
             "timestamp": ts_str,
         }
         return feats, None
@@ -283,7 +341,87 @@ def get_latest_features():
         return None, f"Data error: {e}"
 
 
-# ---------- SIGNAL LOGIC (MARKET + WEATHER) ---------- #
+def get_latest_features_mode(mode: str):
+    """
+    mode = "fast" or "extended"
+    FAST: 60d + cache
+    EXTENDED: 120d, no cache
+    """
+    if mode == "extended":
+        return get_latest_features_fresh(period_days=120)
+
+    # fast + cached
+    now = time.time()
+    age = now - market_cache["timestamp"]
+    if age < CACHE_TTL_SECONDS and market_cache["data"] is not None:
+        return market_cache["data"], market_cache["error"]
+
+    feats, err = get_latest_features_fresh(period_days=60)
+    market_cache["data"] = feats
+    market_cache["error"] = err
+    market_cache["timestamp"] = now
+    return feats, err
+
+
+# ========= CRUDE OIL IMPACT TEXT ========= #
+
+def compute_crude_impact(features):
+    """
+    Explain what crude oil is doing and how it might affect NatGas.
+    Uses:
+      - cl_ret_3d (3-day % move)
+      - ng_cl_ratio_z (NatGas vs oil valuation)
+    """
+    ratio_z = features.get("ng_cl_ratio_z", 0.0)
+    cl_ret_3d = features.get("cl_ret_3d", 0.0)
+    cl_ret_pct = cl_ret_3d * 100.0
+
+    # Crude trend
+    if cl_ret_3d > 0.05:
+        trend_label = "strong uptrend"
+    elif cl_ret_3d > 0.01:
+        trend_label = "mild uptrend"
+    elif cl_ret_3d < -0.05:
+        trend_label = "strong downtrend"
+    elif cl_ret_3d < -0.01:
+        trend_label = "mild downtrend"
+    else:
+        trend_label = "sideways / range-bound"
+
+    # Impact text combining trend + NG/CL ratio
+    if trend_label.startswith("strong up") and ratio_z < -0.5:
+        impact_text = (
+            "Crude oil is rising strongly and NatGas is cheap vs oil → supportive (bullish) "
+            "cross-commodity backdrop for NatGas."
+        )
+    elif trend_label.startswith("strong down") and ratio_z > 0.5:
+        impact_text = (
+            "Crude oil is falling strongly while NatGas is rich vs oil → headwind (bearish) "
+            "cross-commodity signal for NatGas."
+        )
+    elif "uptrend" in trend_label and ratio_z <= 0:
+        impact_text = (
+            "Crude oil is drifting higher; NatGas is fairly priced or cheap vs oil → slightly bullish "
+            "for NatGas."
+        )
+    elif "downtrend" in trend_label and ratio_z >= 0:
+        impact_text = (
+            "Crude oil is drifting lower; NatGas is fairly priced or expensive vs oil → slightly bearish "
+            "for NatGas."
+        )
+    else:
+        impact_text = (
+            "Crude oil trend and the NG/CL spread look mostly neutral for NatGas right now."
+        )
+
+    return {
+        "cl_ret_3d_pct": cl_ret_pct,
+        "trend_label": trend_label,
+        "impact_text": impact_text,
+    }
+
+
+# ========= SIGNAL LOGIC (MARKET + WEATHER) ========= #
 
 def make_signal(features, weather_score: float = 0.0):
     """
@@ -292,7 +430,6 @@ def make_signal(features, weather_score: float = 0.0):
       - Weather_score from US + Europe (HDD + CDD)
     to produce:
       - direction: UP / DOWN / FLAT
-      - suggested BUY/SELL/NO TRADE
       - confidence adjusted by weather
     """
     last_price = features["last_price"]
@@ -387,7 +524,7 @@ def make_signal(features, weather_score: float = 0.0):
     }
 
 
-# ---------- FLASK WEB APP ---------- #
+# ========= FLASK WEB APP ========= #
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -401,9 +538,22 @@ def index():
     feats = None
     weather_info = None
     weather_error = None
+    cl_impact = None
+
+    # Extended toggle (from checkbox)
+    extended_mode = False
+    if request.method == "POST":
+        extended_mode = bool(request.form.get("extended_mode"))
+
+    mode = "extended" if extended_mode else "fast"
+    mode_label = (
+        "EXTENDED mode (more history + weather, slower)"
+        if extended_mode
+        else "FAST mode (cached, lighter)"
+    )
 
     # 1) Market data
-    feats, data_error = get_latest_features()
+    feats, data_error = get_latest_features_mode(mode)
     if data_error:
         error_msg = data_error
     else:
@@ -412,11 +562,12 @@ def index():
 
     # 2) Weather data
     weather_score = 0.0
-    weather_info, weather_error, ws = get_weather_summary()
+    weather_info, weather_error, ws = get_weather_summary_mode(mode)
     weather_score = ws
 
-    # 3) Build signal if we have market features
+    # 3) Build signal + crude impact if we have market features
     if feats is not None and error_msg is None:
+        cl_impact = compute_crude_impact(feats)
         signal = make_signal(feats, weather_score)
 
     # 4) Position sizing from user input
@@ -449,6 +600,9 @@ def index():
         feats=feats,
         weather_info=weather_info,
         weather_error=weather_error,
+        extended_mode=extended_mode,
+        mode_label=mode_label,
+        cl_impact=cl_impact,
     )
 
 
