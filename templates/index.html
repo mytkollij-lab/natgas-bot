@@ -6,9 +6,22 @@
     <style>
         body {
             font-family: Arial, sans-serif;
-            max-width: 700px;
+            max-width: 900px;
             margin: 20px auto;
             padding: 10px;
+        }
+        h1, h2, h3 {
+            margin-bottom: 8px;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 15px;
+        }
+        @media (min-width: 800px) {
+            .grid-2 {
+                grid-template-columns: 1fr 1fr;
+            }
         }
         .card {
             border: 1px solid #ddd;
@@ -17,7 +30,9 @@
             margin-bottom: 15px;
         }
         .error {
-            color: red;
+            color: #b40000;
+            background: #ffe8e8;
+            border-color: #ffb3b3;
         }
         .label {
             font-weight: bold;
@@ -29,6 +44,42 @@
         }
         button {
             padding: 8px 16px;
+            margin-top: 6px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9em;
+        }
+        th, td {
+            border-bottom: 1px solid #eee;
+            padding: 6px 4px;
+            text-align: left;
+        }
+        th {
+            font-weight: bold;
+        }
+        .badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 0.85em;
+        }
+        .badge-up {
+            background: #e0ffec;
+            color: #047a32;
+        }
+        .badge-down {
+            background: #ffe3e3;
+            color: #b00000;
+        }
+        .badge-flat {
+            background: #f0f0f0;
+            color: #444;
+        }
+        .small {
+            font-size: 0.85em;
+            color: #555;
         }
     </style>
 </head>
@@ -42,53 +93,172 @@
         </div>
     {% endif %}
 
-    {% if last_price %}
+    <div class="grid grid-2">
         <div class="card">
-            <p><span class="label">Last price:</span> {{ last_price }}</p>
-            {% if timestamp %}
-                <p><span class="label">Data time (UTC):</span> {{ timestamp }}</p>
+            <h2>Market snapshot</h2>
+            {% if last_price %}
+                <p><span class="label">NatGas last price:</span> {{ last_price | round(4) }}</p>
+                {% if timestamp %}
+                    <p><span class="label">Data time (UTC):</span> {{ timestamp }}</p>
+                {% endif %}
+            {% else %}
+                <p>No NatGas price available right now.</p>
+            {% endif %}
+
+            {% if feats %}
+                <p><span class="label">Crude Oil (CL=F):</span> {{ feats.cl_price | round(4) }}</p>
+                <p><span class="label">NG / CL ratio z-score:</span>
+                    {{ feats.ng_cl_ratio_z | round(2) }}
+                    <span class="small">
+                        {% if feats.ng_cl_ratio_z > 1 %}
+                            (NatGas expensive vs oil)
+                        {% elif feats.ng_cl_ratio_z < -1 %}
+                            (NatGas cheap vs oil)
+                        {% else %}
+                            (Near normal vs oil)
+                        {% endif %}
+                    </span>
+                </p>
             {% endif %}
         </div>
-    {% endif %}
 
-    {% if signal %}
         <div class="card">
             <h2>Signal</h2>
-            <p><span class="label">Direction:</span> {{ signal.direction }}</p>
-            <p><span class="label">Confidence:</span> {{ (signal.confidence * 100) | round(1) }}%</p>
-            <p><span class="label">Stop-loss:</span> {{ signal.stop_loss | round(4) }}</p>
-            <p><span class="label">Take-profit:</span> {{ signal.take_profit | round(4) }}</p>
-            <p><span class="label">Stop distance (%):</span> {{ (signal.stop_pct * 100) | round(2) }}%</p>
-            <p><span class="label">TP distance (%):</span> {{ (signal.tp_pct * 100) | round(2) }}%</p>
+            {% if signal %}
+                <p>
+                    <span class="label">Direction:</span>
+                    {% if signal.direction == "UP" %}
+                        <span class="badge badge-up">UP (bullish)</span>
+                    {% elif signal.direction == "DOWN" %}
+                        <span class="badge badge-down">DOWN (bearish)</span>
+                    {% else %}
+                        <span class="badge badge-flat">FLAT / NO CLEAR EDGE</span>
+                    {% endif %}
+                </p>
+                <p><span class="label">Confidence:</span> {{ (signal.confidence * 100) | round(1) }}%</p>
+                <p><span class="label">Stop-loss:</span> {{ signal.stop_loss | round(4) }}</p>
+                <p><span class="label">Take-profit:</span> {{ signal.take_profit | round(4) }}</p>
+                <p><span class="label">Stop distance:</span> {{ (signal.stop_pct * 100) | round(2) }}%</p>
+                <p><span class="label">TP distance:</span> {{ (signal.tp_pct * 100) | round(2) }}%</p>
+                <p class="small">
+                    The signal combines EMAs, RSI, Bollinger Bands, ATR, MACD and the NatGas/Oil ratio.
+                </p>
+            {% else %}
+                <p>No signal available (maybe data error above).</p>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if feats %}
+        <div class="card">
+            <h2>Technical indicators (what the bot sees)</h2>
+            <table>
+                <tr>
+                    <th>Indicator</th>
+                    <th>Value</th>
+                    <th>Interpretation</th>
+                </tr>
+                <tr>
+                    <td>EMA 10</td>
+                    <td>{{ feats.ema_fast | round(4) }}</td>
+                    <td rowspan="3">
+                        Short = EMA10, Medium = EMA30, Long = EMA50.<br>
+                        If EMA10 &gt; EMA30 &gt; EMA50 → uptrend.<br>
+                        If EMA10 &lt; EMA30 &lt; EMA50 → downtrend.
+                    </td>
+                </tr>
+                <tr>
+                    <td>EMA 30</td>
+                    <td>{{ feats.ema_slow | round(4) }}</td>
+                </tr>
+                <tr>
+                    <td>EMA 50</td>
+                    <td>{{ feats.ema_long | round(4) }}</td>
+                </tr>
+                <tr>
+                    <td>RSI 14</td>
+                    <td>{{ feats.rsi | round(2) }}</td>
+                    <td>
+                        &lt; 30 = oversold, &gt; 70 = overbought.<br>
+                        Mid-range = normal.
+                    </td>
+                </tr>
+                <tr>
+                    <td>24h volatility</td>
+                    <td>{{ (feats.vol_24h * 100) | round(2) }}%</td>
+                    <td>How much price moves in a day (bigger = more risk).</td>
+                </tr>
+                <tr>
+                    <td>ATR 14</td>
+                    <td>
+                        {{ feats.atr_14 | round(4) }}
+                        ({{ ((feats.atr_14 / (last_price or 1)) * 100) | round(2) }}%)
+                    </td>
+                    <td>Average True Range, used to size the stop.</td>
+                </tr>
+                <tr>
+                    <td>Bollinger position</td>
+                    <td>{{ (feats.bb_pos * 100) | round(1) }}%</td>
+                    <td>
+                        ~0% = near lower band (cheap), ~100% = near upper band (expensive).
+                    </td>
+                </tr>
+                <tr>
+                    <td>MACD line</td>
+                    <td>{{ feats.macd_line | round(4) }}</td>
+                    <td rowspan="2">
+                        MACD &gt; 0 with positive histogram = bullish momentum.<br>
+                        MACD &lt; 0 with negative histogram = bearish momentum.
+                    </td>
+                </tr>
+                <tr>
+                    <td>MACD histogram</td>
+                    <td>{{ feats.macd_hist | round(4) }}</td>
+                </tr>
+            </table>
         </div>
     {% endif %}
 
-    <div class="card">
-        <h2>Position size calculator</h2>
-        <form method="post">
-            <label>
-                Account balance:
-                <input type="number" step="0.01" name="account_balance"
-                       value="{{ account_balance if account_balance else '' }}">
-            </label>
-            <label>
-                Risk per trade (%):
-                <input type="number" step="0.1" name="risk_pct"
-                       value="{{ risk_pct }}">
-            </label>
-            <button type="submit">Calculate position size</button>
-        </form>
+    <div class="grid grid-2">
+        <div class="card">
+            <h2>Position size calculator</h2>
+            <form method="post">
+                <label>
+                    Account balance:
+                    <input type="number" step="0.01" name="account_balance"
+                           value="{{ account_balance if account_balance else '' }}">
+                </label>
+                <label>
+                    Risk per trade (%):
+                    <input type="number" step="0.1" name="risk_pct"
+                           value="{{ risk_pct }}">
+                </label>
+                <button type="submit">Calculate position size</button>
+            </form>
 
-        {% if position_size %}
-            <p><span class="label">Suggested position size (units):</span>
-                {{ position_size | round(2) }}</p>
-        {% endif %}
+            {% if position_size %}
+                <p><span class="label">Suggested position size (units):</span>
+                    {{ position_size | round(2) }}</p>
+            {% endif %}
+            <p class="small">
+                Position size = (account × risk%) ÷ stop distance.<br>
+                You still choose your own leverage and lot size on your broker.
+            </p>
+        </div>
+
+        <div class="card">
+            <h2>How to read this</h2>
+            <ul class="small">
+                <li><b>Direction</b> = main idea (UP / DOWN / FLAT).</li>
+                <li><b>Confidence</b> = how strong the setup looks (40–95%).</li>
+                <li><b>SL/TP</b> = suggested levels based on ATR & volatility.</li>
+                <li><b>Indicators table</b> shows what the bot “sees” from past candles.</li>
+                <li><b>NG vs Oil</b> shows if NatGas looks expensive or cheap vs crude oil.</li>
+            </ul>
+            <p class="small">
+                This is a helper tool, not guaranteed profit. Always manage your own risk.
+            </p>
+        </div>
     </div>
-
-    <p style="font-size: 0.85em; color:#555;">
-        Data source: Yahoo Finance (symbol NG=F). This tool uses EMAs, RSI and
-        volatility from past candles to generate a rough directional signal.
-        It is NOT guaranteed profit. Trade at your own risk.
-    </p>
 </body>
 </html>
