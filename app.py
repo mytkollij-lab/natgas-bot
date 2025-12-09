@@ -6,7 +6,7 @@ from flask import Flask, render_template, request
 
 app = Flask(__name__)
 
-# --------- INDICATORS USING PAST DATA --------- #
+# ---------- INDICATORS USING PAST DATA ---------- #
 
 def ema(series: pd.Series, window: int) -> pd.Series:
     """Exponential moving average."""
@@ -24,39 +24,102 @@ def rsi(series: pd.Series, window: int = 14) -> pd.Series:
     rs = avg_gain / (avg_loss + 1e-9)
     return 100 - (100 / (1 + rs))
 
-# --------- DATA FETCH + FEATURE BUILD --------- #
+def atr(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14) -> pd.Series:
+    """Average True Range."""
+    prev_close = close.shift(1)
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return tr.rolling(window=window).mean()
+
+def bollinger_bands(close: pd.Series, window: int = 20, num_std: float = 2.0):
+    mid = close.rolling(window).mean()
+    std = close.rolling(window).std()
+    upper = mid + num_std * std
+    lower = mid - num_std * std
+    return mid, upper, lower
+
+def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
+    ema_fast = ema(series, fast)
+    ema_slow = ema(series, slow)
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    hist = macd_line - signal_line
+    return macd_line, signal_line, hist
+
+# ---------- DATA FETCH + FEATURE BUILD ---------- #
 
 def get_latest_features():
     """
-    Download recent NatGas (NG=F) candles from Yahoo Finance
+    Download recent NatGas (NG=F) and Crude Oil (CL=F) candles from Yahoo Finance
     and calculate indicators that look at the past.
     """
     try:
-        # 60 days of hourly candles (1h) gives a nice history
-        df = yf.download("NG=F", period="60d", interval="1h")
+        # 120 days of hourly candles
+        ng = yf.download("NG=F", period="120d", interval="1h")
+        cl = yf.download("CL=F", period="120d", interval="1h")
 
-        if df is None or df.empty:
+        if ng is None or ng.empty:
             return None, "No NatGas data received from Yahoo Finance."
+        if cl is None or cl.empty:
+            return None, "No Crude Oil data received from Yahoo Finance."
 
+        # Build combined DataFrame so we can compute a NG/CL ratio
+        df = pd.DataFrame(index=ng.index)
+        df["ng_close"] = ng["Close"]
+        df["ng_high"] = ng["High"]
+        df["ng_low"] = ng["Low"]
+        df["cl_close"] = cl["Close"]
         df = df.dropna()
+
         if df.empty:
-            return None, "NatGas data empty after cleaning."
+            return None, "Not enough overlapping NG & CL data after cleaning."
 
-        close = df["Close"]
+        close = df["ng_close"]
+        high = df["ng_high"]
+        low = df["ng_low"]
+        cl_close = df["cl_close"]
 
-        # Technical indicators that depend on past prices
+        # EMAs (short, medium, long trend)
         df["ema_fast"] = ema(close, 10)
         df["ema_slow"] = ema(close, 30)
-        df["ema_diff"] = df["ema_fast"] - df["ema_slow"]
+        df["ema_long"] = ema(close, 50)
+
+        # RSI
         df["rsi"] = rsi(close, 14)
 
-        # 1h returns + rolling volatility as risk measure
+        # Volatility (24h std of 1h returns)
         df["ret_1h"] = close.pct_change(1)
         df["volatility_24h"] = df["ret_1h"].rolling(24).std()
 
+        # ATR (true range based stop sizing)
+        df["atr_14"] = atr(high, low, close, 14)
+
+        # Bollinger Bands
+        mid, upper, lower = bollinger_bands(close, 20, 2.0)
+        df["bb_mid"] = mid
+        df["bb_upper"] = upper
+        df["bb_lower"] = lower
+        # Position inside the band: 0 = lower band, 1 = upper band
+        df["bb_pos"] = (close - lower) / (upper - lower + 1e-9)
+
+        # MACD
+        macd_line, signal_line, hist = macd(close, 12, 26, 9)
+        df["macd_line"] = macd_line
+        df["macd_signal"] = signal_line
+        df["macd_hist"] = hist
+
+        # NG/CL price ratio and z-score
+        df["ng_cl_ratio"] = close / cl_close
+        ratio = df["ng_cl_ratio"]
+        ratio_ma = ratio.rolling(50).mean()
+        ratio_std = ratio.rolling(50).std()
+        df["ng_cl_ratio_z"] = (ratio - ratio_ma) / (ratio_std + 1e-9)
+
         df = df.dropna()
         if df.empty:
-            return None, "Not enough candles to calculate indicators."
+            return None, "Not enough candles to calculate extended indicators."
 
         latest = df.iloc[-1]
         ts = df.index[-1]
@@ -66,12 +129,18 @@ def get_latest_features():
             ts_str = str(ts)
 
         feats = {
-            "last_price": float(latest["Close"]),
+            "last_price": float(latest["ng_close"]),
             "ema_fast": float(latest["ema_fast"]),
             "ema_slow": float(latest["ema_slow"]),
-            "ema_diff": float(latest["ema_diff"]),
+            "ema_long": float(latest["ema_long"]),
             "rsi": float(latest["rsi"]),
             "vol_24h": float(latest["volatility_24h"]),
+            "atr_14": float(latest["atr_14"]),
+            "bb_pos": float(latest["bb_pos"]),
+            "macd_line": float(latest["macd_line"]),
+            "macd_hist": float(latest["macd_hist"]),
+            "cl_price": float(latest["cl_close"]),
+            "ng_cl_ratio_z": float(latest["ng_cl_ratio_z"]),
             "timestamp": ts_str,
         }
         return feats, None
@@ -79,43 +148,79 @@ def get_latest_features():
     except Exception as e:
         return None, f"Data error: {e}"
 
-# --------- SIGNAL LOGIC --------- #
+# ---------- SIGNAL LOGIC (USES ALL FEATURES) ---------- #
 
 def make_signal(features):
     """
-    Rule-based signal using:
-    - EMA 10 vs EMA 30 (trend)
-    - RSI (momentum)
-    - Volatility for stop size
+    Smarter rule-based signal using:
+    - EMA 10 / 30 / 50 (trend)
+    - RSI (momentum / overbought / oversold)
+    - Bollinger position
+    - ATR (for stop size)
+    - MACD + hist (trend confirmation)
+    - NG/CL ratio z-score (relative over/undervaluation vs oil)
     """
     last_price = features["last_price"]
     ema_fast_val = features["ema_fast"]
     ema_slow_val = features["ema_slow"]
+    ema_long_val = features["ema_long"]
     rsi_val = features["rsi"]
     vol_24h = features["vol_24h"]
+    atr_14 = features["atr_14"]
+    bb_pos = features["bb_pos"]
+    macd_line = features["macd_line"]
+    macd_hist = features["macd_hist"]
+    ratio_z = features["ng_cl_ratio_z"]
 
-    # Trend + RSI rules
-    if ema_fast_val > ema_slow_val and 45 <= rsi_val <= 65:
+    # Trend conditions
+    strong_up_trend = ema_fast_val > ema_slow_val > ema_long_val and macd_line > 0
+    strong_down_trend = ema_fast_val < ema_slow_val < ema_long_val and macd_line < 0
+
+    # Overbought / Oversold using multiple signals
+    overbought = (rsi_val > 70) or (bb_pos > 0.9) or (ratio_z > 1.0)
+    oversold = (rsi_val < 30) or (bb_pos < 0.1) or (ratio_z < -1.0)
+
+    # Base direction and base confidence
+    if strong_up_trend and not overbought:
         direction = "UP"
-        base_conf = 0.65
-    elif ema_fast_val < ema_slow_val and 35 <= rsi_val <= 55:
+        base_conf = 0.7
+    elif strong_down_trend and not oversold:
         direction = "DOWN"
-        base_conf = 0.65
+        base_conf = 0.7
+    elif oversold and macd_hist > 0:
+        # Oversold and MACD histogram turning up => possible reversal long
+        direction = "UP"
+        base_conf = 0.6
+    elif overbought and macd_hist < 0:
+        # Overbought and MACD histogram turning down => possible reversal short
+        direction = "DOWN"
+        base_conf = 0.6
     else:
         direction = "FLAT"
         base_conf = 0.5
 
-    # Volatility-based stop (0.5% to 3% of price)
-    if vol_24h is None or math.isnan(vol_24h) or vol_24h == 0:
-        stop_pct = 0.01
-    else:
+    # Stop size from ATR (fallback to volatility if needed)
+    if atr_14 and not math.isnan(atr_14) and atr_14 > 0:
+        atr_pct = atr_14 / (last_price + 1e-9)
+        stop_pct = min(max(atr_pct * 1.5, 0.0075), 0.04)  # 0.75%–4%
+    elif vol_24h and not math.isnan(vol_24h) and vol_24h > 0:
         stop_pct = min(max(vol_24h * 2.0, 0.005), 0.03)
+    else:
+        stop_pct = 0.01  # fallback
 
-    tp_pct = stop_pct * 3  # TP at 3x stop distance
+    tp_pct = stop_pct * 2.5  # TP at 2.5x stop distance
 
-    # Confidence nudged by EMA spread (how strong the trend is)
-    ema_spread = abs(ema_fast_val - ema_slow_val) / (last_price + 1e-9)
-    confidence = float(min(max(base_conf + ema_spread * 0.5, 0.4), 0.9))
+    # Confidence adjustments:
+    # - Stronger EMA separation => more confidence
+    # - NG/CL ratio extreme reduces confidence (mean-reversion risk)
+    trend_strength = abs(ema_fast_val - ema_long_val) / (last_price + 1e-9)
+    conf_adj_trend = min(trend_strength * 0.8, 0.2)  # at most +0.2
+
+    # Penalty for extreme ratio
+    ratio_penalty = min(abs(ratio_z) * 0.05, 0.15)  # at most -0.15
+
+    confidence = base_conf + conf_adj_trend - ratio_penalty
+    confidence = float(min(max(confidence, 0.4), 0.95))
 
     # Convert stop/TP % to price levels
     if direction == "UP":
@@ -137,7 +242,7 @@ def make_signal(features):
         "take_profit": take_profit,
     }
 
-# --------- FLASK WEB APP --------- #
+# ---------- FLASK WEB APP ---------- #
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -149,7 +254,7 @@ def index():
     timestamp = None
     error_msg = None
 
-    # 1) Fetch live NatGas data + build features
+    # 1) Fetch live data + build features
     feats, data_error = get_latest_features()
     if data_error:
         error_msg = data_error
