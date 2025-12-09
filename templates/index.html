@@ -1,598 +1,348 @@
-import math
-import json
-import time
-from urllib.request import urlopen
-
-import pandas as pd
-import yfinance as yf
-from flask import Flask, render_template, request
-
-app = Flask(__name__)
-
-# ========= SIMPLE CACHE (to avoid being too slow) ========= #
-
-CACHE_TTL_SECONDS = 300  # 5 minutes
-
-market_cache = {"data": None, "error": None, "timestamp": 0.0}
-weather_cache = {"info": None, "error": None, "score": 0.0, "timestamp": 0.0}
-
-# ========= WEATHER REGIONS (kept small for speed) ========= #
-
-WEATHER_LOCATIONS = [
-    {"name": "US Northeast (New York)", "lat": 40.71, "lon": -74.00},
-    {"name": "US Midwest (Chicago)", "lat": 41.88, "lon": -87.63},
-    {"name": "US Texas (Houston)", "lat": 29.76, "lon": -95.37},
-    {"name": "UK (London)", "lat": 51.50, "lon": -0.12},
-    {"name": "Germany (Berlin)", "lat": 52.52, "lon": 13.40},
-    {"name": "Italy (Milan)", "lat": 45.46, "lon": 9.19},
-]
-
-
-# ========= WEATHER HELPERS (for demand + confidence) ========= #
-
-def fetch_weather_for_location(lat: float, lon: float):
-    """
-    Use Open-Meteo free API to get next 7 days of hourly temperature.
-    Return: (current_temp, HDD_7d, CDD_7d) with base 18°C.
-    """
-    base_temp = 18.0
-    url = (
-        "https://api.open-meteo.com/v1/forecast"
-        f"?latitude={lat}&longitude={lon}"
-        "&hourly=temperature_2m&forecast_days=7"
-    )
-    with urlopen(url, timeout=10) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-
-    temps = data.get("hourly", {}).get("temperature_2m", [])
-    if not temps:
-        return None, 0.0, 0.0
-
-    current_temp = temps[0]
-    hdd = 0.0
-    cdd = 0.0
-    for t in temps:
-        hdd += max(0.0, base_temp - t)
-        cdd += max(0.0, t - base_temp)
-    return current_temp, hdd, cdd
-
-
-def compute_weather_summary():
-    """
-    Aggregate weather across key regions.
-    Returns:
-      weather_info (dict),
-      weather_error (str or None),
-      weather_score (float in [-0.25, +0.25])
-    """
-    locations_data = []
-    total_hdd = 0.0
-    total_cdd = 0.0
-    count = 0
-
-    for loc in WEATHER_LOCATIONS:
-        try:
-            temp, hdd, cdd = fetch_weather_for_location(loc["lat"], loc["lon"])
-            locations_data.append(
-                {"name": loc["name"], "temp": temp, "hdd7": hdd, "cdd7": cdd}
-            )
-            total_hdd += hdd
-            total_cdd += cdd
-            count += 1
-        except Exception:
-            continue
-
-    if count == 0:
-        return None, "Weather API error (Open-Meteo).", 0.0
-
-    avg_hdd = total_hdd / count
-    avg_cdd = total_cdd / count
-
-    # Make a rough demand score:
-    heating_strength = avg_hdd / 100.0
-    cooling_strength = avg_cdd / 100.0
-
-    weather_score = 0.0
-
-    # Colder/Hotter = bullish NatGas
-    if heating_strength > 1.5:
-        weather_score += 0.20
-    elif heating_strength > 0.8:
-        weather_score += 0.10
-
-    if cooling_strength > 1.5:
-        weather_score += 0.15
-    elif cooling_strength > 0.8:
-        weather_score += 0.07
-
-    # Mild both sides = bearish
-    if heating_strength < 0.4 and cooling_strength < 0.4:
-        weather_score -= 0.15
-
-    # Clamp
-    weather_score = max(min(weather_score, 0.25), -0.25)
-
-    if weather_score > 0.15:
-        impact_text = "Weather: strongly supportive (high heating/cooling demand)."
-    elif weather_score > 0.05:
-        impact_text = "Weather: slightly supportive for NatGas."
-    elif weather_score < -0.05:
-        impact_text = "Weather: slightly against NatGas (mild temperatures)."
-    else:
-        impact_text = "Weather: roughly neutral impact on NatGas."
-
-    weather_info = {
-        "locations": locations_data,
-        "avg_hdd": avg_hdd,
-        "avg_cdd": avg_cdd,
-        "impact_text": impact_text,
-        "score": weather_score,
-    }
-
-    return weather_info, None, weather_score
-
-
-def get_weather_summary_cached():
-    now = time.time()
-    age = now - weather_cache["timestamp"]
-    if age < CACHE_TTL_SECONDS and weather_cache["info"] is not None:
-        return (
-            weather_cache["info"],
-            weather_cache["error"],
-            weather_cache["score"],
-        )
-
-    info, err, score = compute_weather_summary()
-    weather_cache["info"] = info
-    weather_cache["error"] = err
-    weather_cache["score"] = score
-    weather_cache["timestamp"] = now
-    return info, err, score
-
-
-# ========= INDICATORS USING MARKET DATA ========= #
-
-def ema(series: pd.Series, window: int) -> pd.Series:
-    return series.ewm(span=window, adjust=False).mean()
-
-
-def rsi(series: pd.Series, window: int = 14) -> pd.Series:
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-
-    avg_gain = gain.rolling(window=window).mean()
-    avg_loss = loss.rolling(window=window).mean()
-
-    rs = avg_gain / (avg_loss + 1e-9)
-    return 100 - (100 / (1 + rs))
-
-
-def atr(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14) -> pd.Series:
-    prev_close = close.shift(1)
-    tr1 = high - low
-    tr2 = (high - prev_close).abs()
-    tr3 = (low - prev_close).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    return tr.rolling(window=window).mean()
-
-
-def bollinger_bands(close: pd.Series, window: int = 20, num_std: float = 2.0):
-    mid = close.rolling(window).mean()
-    std = close.rolling(window).std()
-    upper = mid + num_std * std
-    lower = mid - num_std * std
-    return mid, upper, lower
-
-
-def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
-    ema_fast = ema(series, fast)
-    ema_slow = ema(series, slow)
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    hist = macd_line - signal_line
-    return macd_line, signal_line, hist
-
-
-# ========= MARKET DATA + FEATURES ========= #
-
-def get_latest_features_fresh():
-    """
-    Download about 60 days of hourly NG + CL data and calculate indicators.
-    """
-    try:
-        ng = yf.download(
-            "NG=F", period="60d", interval="1h", progress=False, threads=False
-        )
-        cl = yf.download(
-            "CL=F", period="60d", interval="1h", progress=False, threads=False
-        )
-
-        if ng is None or ng.empty:
-            return None, "No NatGas data received from Yahoo Finance."
-        if cl is None or cl.empty:
-            return None, "No Crude Oil data received from Yahoo Finance."
-
-        df = pd.DataFrame(index=ng.index)
-        df["ng_close"] = ng["Close"]
-        df["ng_high"] = ng["High"]
-        df["ng_low"] = ng["Low"]
-        df["cl_close"] = cl["Close"]
-        df = df.dropna()
-
-        if df.empty:
-            return None, "Not enough overlapping NG & CL data after cleaning."
-
-        close = df["ng_close"]
-        high = df["ng_high"]
-        low = df["ng_low"]
-        cl_close = df["cl_close"]
-
-        # EMAs
-        df["ema_fast"] = ema(close, 10)
-        df["ema_slow"] = ema(close, 30)
-        df["ema_long"] = ema(close, 50)
-
-        # RSI
-        df["rsi"] = rsi(close, 14)
-
-        # Volatility (24h std of 1h returns)
-        df["ret_1h"] = close.pct_change(1)
-        df["volatility_24h"] = df["ret_1h"].rolling(24).std()
-
-        # ATR
-        df["atr_14"] = atr(high, low, close, 14)
-
-        # Bollinger
-        mid, upper, lower = bollinger_bands(close, 20, 2.0)
-        df["bb_mid"] = mid
-        df["bb_upper"] = upper
-        df["bb_lower"] = lower
-        df["bb_pos"] = (close - lower) / (upper - lower + 1e-9)
-
-        # MACD
-        macd_line, signal_line, hist = macd(close, 12, 26, 9)
-        df["macd_line"] = macd_line
-        df["macd_signal"] = signal_line
-        df["macd_hist"] = hist
-
-        # NG/CL ratio
-        df["ng_cl_ratio"] = close / cl_close
-        ratio = df["ng_cl_ratio"]
-        ratio_ma = ratio.rolling(50).mean()
-        ratio_std = ratio.rolling(50).std()
-        df["ng_cl_ratio_z"] = (ratio - ratio_ma) / (ratio_std + 1e-9)
-
-        # Crude oil 3-day return (impact explanation)
-        df["cl_ret_3d"] = cl_close.pct_change(72)  # 3 days ≈ 72 hours
-
-        df = df.dropna()
-        if df.empty:
-            return None, "Not enough candles to calculate indicators."
-
-        latest = df.iloc[-1]
-        ts = df.index[-1]
-        try:
-            ts_str = ts.tz_convert("UTC").strftime("%Y-%m-%d %H:%M")
-        except Exception:
-            ts_str = str(ts)
-
-        feats = {
-            "last_price": float(latest["ng_close"]),
-            "ema_fast": float(latest["ema_fast"]),
-            "ema_slow": float(latest["ema_slow"]),
-            "ema_long": float(latest["ema_long"]),
-            "rsi": float(latest["rsi"]),
-            "vol_24h": float(latest["volatility_24h"]),
-            "atr_14": float(latest["atr_14"]),
-            "bb_pos": float(latest["bb_pos"]),
-            "macd_line": float(latest["macd_line"]),
-            "macd_hist": float(latest["macd_hist"]),
-            "cl_price": float(latest["cl_close"]),
-            "ng_cl_ratio_z": float(latest["ng_cl_ratio_z"]),
-            "cl_ret_3d": float(latest["cl_ret_3d"]),
-            "timestamp": ts_str,
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>NatGas Weekly Trend Bot</title>
+    <style>
+        :root {
+            --bg: #020617;
+            --card: #020617;
+            --card-alt: #0b1220;
+            --border: #1f2937;
+            --text: #e5e7eb;
+            --muted: #9ca3af;
+            --accent: #38bdf8;
+            --green: #22c55e;
+            --red: #ef4444;
+            --yellow: #eab308;
         }
-        return feats, None
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+            background: radial-gradient(circle at top left,#0f172a 0,#020617 45%,#000 100%);
+            color: var(--text);
+        }
+        .page { max-width: 1200px; margin: 0 auto; padding: 20px 16px 40px; }
+        header {
+            display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between;
+            gap:10px; margin-bottom:18px;
+        }
+        .title-block h1 {
+            font-size:1.9rem; margin:0; display:flex; align-items:center; gap:8px;
+        }
+        .title-pill {
+            font-size:0.8rem; padding:3px 9px; border-radius:999px;
+            background:rgba(56,189,248,0.1); color:var(--accent);
+            border:1px solid rgba(56,189,248,0.4);
+        }
+        .title-sub { margin-top:4px; font-size:0.9rem; color:var(--muted); }
+        .timestamp { font-size:0.85rem; color:var(--muted); text-align:right; }
+        .timestamp span { color:var(--accent); }
 
-    except Exception as e:
-        return None, f"Data error: {e}"
+        .card,.card-soft {
+            border-radius:14px; padding:14px 14px 16px;
+            border:1px solid rgba(148,163,184,0.15);
+        }
+        .card {
+            background:linear-gradient(135deg,rgba(15,23,42,0.94),rgba(15,23,42,0.98));
+            box-shadow:0 18px 45px rgba(15,23,42,0.75);
+        }
+        .card-soft {
+            background:radial-gradient(circle at top left,#111827,#020617);
+            border-color:rgba(55,65,81,0.7);
+        }
+        .card h2,.card-soft h2 {
+            font-size:1.1rem; margin:0 0 10px; display:flex; align-items:center; gap:6px;
+        }
+        .card h2 span.dot,.card-soft h2 span.dot {
+            width:8px; height:8px; border-radius:999px;
+            background:var(--accent); box-shadow:0 0 8px rgba(56,189,248,0.9);
+        }
+        .error {
+            border-color:rgba(248,113,113,0.7);
+            background:linear-gradient(135deg,rgba(127,29,29,0.9),rgba(15,23,42,0.96));
+        }
+        .label { font-weight:600; font-size:0.9rem; }
+        p { margin:4px 0 6px; font-size:0.9rem; }
+        .muted { color:var(--muted); }
 
+        .badge {
+            display:inline-flex; align-items:center; gap:6px;
+            padding:4px 12px; border-radius:999px;
+            font-size:0.9rem; font-weight:700; letter-spacing:0.03em;
+            text-transform:uppercase;
+        }
+        .badge-up {
+            background:rgba(34,197,94,0.16);
+            color:#bbf7d0;
+            border:1px solid rgba(34,197,94,0.7);
+        }
+        .badge-down {
+            background:rgba(248,113,113,0.2);
+            color:#fecaca;
+            border:1px solid rgba(248,113,113,0.8);
+        }
+        .badge-flat {
+            background:rgba(148,163,184,0.2);
+            color:#e5e7eb;
+            border:1px solid rgba(148,163,184,0.8);
+        }
+        .pill {
+            display:inline-block; font-size:0.78rem; padding:2px 7px; border-radius:999px;
+            background:rgba(148,163,184,0.2); color:var(--muted);
+        }
+        .pill-risk { background:rgba(234,179,8,0.18); color:var(--yellow); }
+        .big-number { font-size:1.8rem; font-weight:700; }
 
-def get_latest_features_cached():
-    now = time.time()
-    age = now - market_cache["timestamp"]
-    if age < CACHE_TTL_SECONDS and market_cache["data"] is not None:
-        return market_cache["data"], market_cache["error"]
+        .grid { display:grid; grid-template-columns:1fr; gap:16px; }
+        @media (min-width:880px){
+            .grid-2-even { grid-template-columns:1fr 1fr; }
+        }
 
-    feats, err = get_latest_features_fresh()
-    market_cache["data"] = feats
-    market_cache["error"] = err
-    market_cache["timestamp"] = now
-    return feats, err
+        table {
+            width:100%; border-collapse:collapse; font-size:0.85rem; margin-top:4px;
+        }
+        th,td {
+            border-bottom:1px solid rgba(31,41,55,0.9);
+            padding:6px 6px; text-align:left;
+        }
+        th { font-weight:600; color:var(--muted); font-size:0.8rem; }
+        tr:last-child td { border-bottom:none; }
 
+        input {
+            width:100%; padding:7px 9px; margin:3px 0 6px;
+            border-radius:8px;
+            border:1px solid rgba(55,65,81,0.9);
+            background:linear-gradient(135deg,#020617,#020617);
+            color:var(--text); font-size:0.9rem;
+        }
+        input:focus {
+            outline:1px solid var(--accent);
+            border-color:var(--accent);
+            box-shadow:0 0 0 1px rgba(56,189,248,0.6);
+        }
+        button {
+            padding:7px 14px; margin-top:6px;
+            border-radius:999px; border:none;
+            background:linear-gradient(135deg,#38bdf8,#22c55e);
+            color:#0b1120; font-weight:600; font-size:0.9rem;
+            cursor:pointer; box-shadow:0 10px 22px rgba(56,189,248,0.35);
+        }
+        button:hover { filter:brightness(1.05); }
 
-# ========= CRUDE OIL IMPACT TEXT ========= #
+        ul.small { padding-left:18px; }
+        .small { font-size:0.8rem; color:var(--muted); }
 
-def compute_crude_impact(features):
-    ratio_z = features.get("ng_cl_ratio_z", 0.0)
-    cl_ret_3d = features.get("cl_ret_3d", 0.0)
-    cl_ret_pct = cl_ret_3d * 100.0
+        .split-line {
+            height:1px;
+            background:linear-gradient(to right,transparent,rgba(148,163,184,0.5),transparent);
+            margin:8px 0 10px;
+        }
+        .weekly-bias-up { color:var(--green); font-weight:600; }
+        .weekly-bias-down { color:var(--red); font-weight:600; }
+        .weekly-bias-choppy { color:var(--muted); font-weight:600; }
+    </style>
+</head>
+<body>
+<div class="page">
+    <header>
+        <div class="title-block">
+            <h1>
+                NatGas Weekly Trend Bot
+                <span class="title-pill">Trend signal + week outlook</span>
+            </h1>
+            <div class="title-sub">
+                Main focus: BUY / SELL / NO TRADE signal, with a projected bias for the rest of the trading week.
+            </div>
+        </div>
+        <div class="timestamp">
+            {% if timestamp %}
+                <div>Last market update: <span>{{ timestamp }}</span> UTC</div>
+            {% endif %}
+        </div>
+    </header>
 
-    if cl_ret_3d > 0.05:
-        trend_label = "strong uptrend"
-    elif cl_ret_3d > 0.01:
-        trend_label = "mild uptrend"
-    elif cl_ret_3d < -0.05:
-        trend_label = "strong downtrend"
-    elif cl_ret_3d < -0.01:
-        trend_label = "mild downtrend"
-    else:
-        trend_label = "sideways / range-bound"
+    {% if error_msg %}
+        <div class="card error">
+            <h2><span class="dot"></span> Market data error</h2>
+            <p>{{ error_msg }}</p>
+        </div>
+    {% endif %}
 
-    if trend_label.startswith("strong up") and ratio_z < -0.5:
-        impact_text = (
-            "Crude is rising strongly and NatGas is cheap vs oil → supportive (bullish) backdrop."
-        )
-    elif trend_label.startswith("strong down") and ratio_z > 0.5:
-        impact_text = (
-            "Crude is falling strongly and NatGas is rich vs oil → headwind (bearish) backdrop."
-        )
-    elif "uptrend" in trend_label and ratio_z <= 0:
-        impact_text = "Crude drifting higher; NatGas fairly priced/cheap vs oil → slightly bullish."
-    elif "downtrend" in trend_label and ratio_z >= 0:
-        impact_text = "Crude drifting lower; NatGas fairly priced/expensive vs oil → slightly bearish."
-    else:
-        impact_text = "Crude/NG spread looks mostly neutral right now."
+    <!-- MAIN SIGNAL -->
+    <div class="card">
+        <h2><span class="dot"></span> Main trend signal</h2>
 
-    return {
-        "cl_ret_3d_pct": cl_ret_pct,
-        "trend_label": trend_label,
-        "impact_text": impact_text,
-    }
+        {% if signal %}
+            <p>
+                {% if signal.direction == "UP" %}
+                    <span class="badge badge-up">BUY / LONG BIAS</span>
+                {% elif signal.direction == "DOWN" %}
+                    <span class="badge badge-down">SELL / SHORT BIAS</span>
+                {% else %}
+                    <span class="badge badge-flat">NO CLEAR EDGE / NO TRADE</span>
+                {% endif %}
+                <span class="pill pill-risk">Not financial advice</span>
+            </p>
 
+            <p>
+                <span class="label">Confidence now:</span>
+                <span class="big-number">{{ (signal.confidence * 100) | round(1) }}%</span>
+            </p>
 
-# ========= SIGNAL LOGIC ========= #
+            {% if last_price %}
+                <p>
+                    <span class="label">NatGas last price:</span>
+                    <span style="color:var(--accent); font-weight:600;">
+                        {{ last_price | round(4) }}
+                    </span>
+                </p>
+            {% endif %}
 
-def make_signal(features, weather_score: float = 0.0):
-    last_price = features["last_price"]
-    ema_fast_val = features["ema_fast"]
-    ema_slow_val = features["ema_slow"]
-    ema_long_val = features["ema_long"]
-    rsi_val = features["rsi"]
-    vol_24h = features["vol_24h"]
-    atr_14 = features["atr_14"]
-    bb_pos = features["bb_pos"]
-    macd_line = features["macd_line"]
-    macd_hist = features["macd_hist"]
-    ratio_z = features["ng_cl_ratio_z"]
+            {% if weather_info %}
+                <p class="small">{{ weather_info.impact_text }}</p>
+            {% endif %}
 
-    # Trend conditions
-    strong_up_trend = ema_fast_val > ema_slow_val > ema_long_val and macd_line > 0
-    strong_down_trend = ema_fast_val < ema_slow_val < ema_long_val and macd_line < 0
+            {% if cl_impact %}
+                <p class="small">
+                    Crude oil: {{ cl_impact.trend_label }}
+                    ({{ cl_impact.cl_ret_3d_pct | round(2) }}% over 3 days).<br>
+                    {{ cl_impact.impact_text }}
+                </p>
+            {% endif %}
 
-    # Overbought / oversold
-    overbought = (rsi_val > 70) or (bb_pos > 0.9) or (ratio_z > 1.0)
-    oversold = (rsi_val < 30) or (bb_pos < 0.1) or (ratio_z < -1.0)
+            <div class="split-line"></div>
 
-    # Base direction + base confidence
-    if strong_up_trend and not overbought:
-        direction = "UP"
-        base_conf = 0.7
-    elif strong_down_trend and not oversold:
-        direction = "DOWN"
-        base_conf = 0.7
-    elif oversold and macd_hist > 0:
-        direction = "UP"
-        base_conf = 0.6
-    elif overbought and macd_hist < 0:
-        direction = "DOWN"
-        base_conf = 0.6
-    else:
-        direction = "FLAT"
-        base_conf = 0.5
+            <p>
+                <span class="label">Stop-loss level:</span> {{ signal.stop_loss | round(4) }}<br>
+                <span class="label">Take-profit level:</span> {{ signal.take_profit | round(4) }}
+            </p>
+            <p class="small">
+                Stop distance: {{ (signal.stop_pct * 100) | round(2) }}% ·
+                TP distance: {{ (signal.tp_pct * 100) | round(2) }}%<br>
+                Risk is sized using volatility / ATR, not a fixed number.
+            </p>
+        {% else %}
+            <p>No signal available right now.</p>
+        {% endif %}
+    </div>
 
-    # Stop size
-    if atr_14 and not math.isnan(atr_14) and atr_14 > 0:
-        atr_pct = atr_14 / (last_price + 1e-9)
-        stop_pct = min(max(atr_pct * 1.5, 0.0075), 0.04)
-    elif vol_24h and not math.isnan(vol_24h) and vol_24h > 0:
-        stop_pct = min(max(vol_24h * 2.0, 0.005), 0.03)
-    else:
-        stop_pct = 0.01
+    <!-- WEEKLY OUTLOOK -->
+    <div class="card-soft" style="margin-top:12px;">
+        <h2><span class="dot"></span> Weekly outlook (projection)</h2>
 
-    tp_pct = stop_pct * 2.5
+        {% if weekly_outlook and signal %}
+            <p class="small">
+                Outlook is based on current trend, volatility, NatGas vs oil and weather.
+                Confidence fades further into the week.
+            </p>
+            <table>
+                <tr>
+                    <th>Period</th>
+                    <th>Bias</th>
+                    <th>Conf.</th>
+                    <th>Comment</th>
+                </tr>
+                {% for day in weekly_outlook %}
+                    <tr>
+                        <td>{{ day.label }}</td>
+                        <td>
+                            {% if day.bias == "UP" %}
+                                <span class="weekly-bias-up">UP / Bullish</span>
+                            {% elif day.bias == "DOWN" %}
+                                <span class="weekly-bias-down">DOWN / Bearish</span>
+                            {% else %}
+                                <span class="weekly-bias-choppy">CHOPPY / RANGE</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ (day.confidence * 100) | round(1) }}%</td>
+                        <td class="small">{{ day.note }}</td>
+                    </tr>
+                {% endfor %}
+            </table>
+            <p class="small">
+                This is a projection, not a guarantee. Unexpected news can break the pattern at any time,
+                especially in NatGas.
+            </p>
+        {% else %}
+            <p>No weekly outlook available.</p>
+        {% endif %}
+    </div>
 
-    # Trend strength adjustment
-    trend_strength = abs(ema_fast_val - ema_long_val) / (last_price + 1e-9)
-    conf_adj_trend = min(trend_strength * 0.8, 0.2)
+    <!-- BOTTOM GRID -->
+    <div class="grid grid-2-even" style="margin-top:14px;">
+        <div class="card-soft">
+            <h2><span class="dot"></span> Market snapshot & tech</h2>
+            {% if feats %}
+                <p>
+                    <span class="label">EMAs (short / mid / long):</span><br>
+                    EMA 10: {{ feats.ema_fast | round(4) }}<br>
+                    EMA 30: {{ feats.ema_slow | round(4) }}<br>
+                    EMA 50: {{ feats.ema_long | round(4) }}
+                </p>
+                <p>
+                    <span class="label">RSI 14:</span> {{ feats.rsi | round(2) }}<br>
+                    <span class="label">24h volatility:</span> {{ (feats.vol_24h * 100) | round(2) }}%<br>
+                    <span class="label">ATR 14:</span> {{ feats.atr_14 | round(4) }}
+                    ({{ ((feats.atr_14 / (last_price or 1)) * 100) | round(2) }}% of price)
+                </p>
+                <p>
+                    <span class="label">Bollinger position:</span>
+                    {{ (feats.bb_pos * 100) | round(1) }}% of band range<br>
+                    <span class="label">MACD line / hist:</span>
+                    {{ feats.macd_line | round(4) }} / {{ feats.macd_hist | round(4) }}
+                </p>
+                <p>
+                    <span class="label">NG / CL ratio z-score:</span>
+                    {{ feats.ng_cl_ratio_z | round(2) }}
+                    <span class="small">(how cheap / expensive NatGas is vs crude over recent history)</span>
+                </p>
+            {% else %}
+                <p>No indicators available.</p>
+            {% endif %}
+        </div>
 
-    # Penalty for extreme NG/CL ratio
-    ratio_penalty = min(abs(ratio_z) * 0.05, 0.15)
+        <div class="card-soft">
+            <h2><span class="dot"></span> Position size & usage</h2>
+            <form method="post">
+                <label>
+                    Account balance:
+                    <input type="number" step="0.01" name="account_balance"
+                           value="{{ account_balance if account_balance is not none else '' }}">
+                </label>
+                <label>
+                    Risk per trade (%):
+                    <input type="number" step="0.1" name="risk_pct"
+                           value="{{ risk_pct }}">
+                </label>
+                <button type="submit">Recalculate position size</button>
+            </form>
 
-    confidence = base_conf + conf_adj_trend - ratio_penalty
+            {% if position_size %}
+                <p style="margin-top:8px;">
+                    <span class="label">Suggested position size (units):</span>
+                    <span style="color:var(--accent); font-weight:600;">
+                        {{ position_size | round(2) }}
+                    </span>
+                </p>
+            {% endif %}
 
-    # Weather adjustment:
-    if weather_score != 0.0:
-        if direction == "UP":
-            confidence += weather_score
-        elif direction == "DOWN":
-            confidence -= weather_score
-        else:
-            confidence += 0.5 * weather_score
+            <p class="small" style="margin-top:6px;">
+                Position size = (account × risk%) ÷ stop distance.<br>
+                You still choose your actual lot size / leverage on Trading212 or any broker.
+            </p>
 
-    # Clamp confidence
-    confidence = float(min(max(confidence, 0.4), 0.98))
-
-    # Price levels
-    if direction == "UP":
-        stop_loss = last_price * (1 - stop_pct)
-        take_profit = last_price * (1 + tp_pct)
-    elif direction == "DOWN":
-        stop_loss = last_price * (1 + stop_pct)
-        take_profit = last_price * (1 - tp_pct)
-    else:
-        stop_loss = last_price * (1 - stop_pct)
-        take_profit = last_price * (1 + tp_pct)
-
-    return {
-        "direction": direction,
-        "confidence": confidence,
-        "stop_pct": stop_pct,
-        "tp_pct": tp_pct,
-        "stop_loss": stop_loss,
-        "take_profit": take_profit,
-        "weather_score": weather_score,
-    }
-
-
-# ========= WEEKLY OUTLOOK (simple projection) ========= #
-
-def make_weekly_forecast(signal, features):
-    """
-    Build a simple 5-day outlook based on:
-      - current direction (UP / DOWN / FLAT)
-      - confidence
-      - volatility
-      - trend strength (distance between EMAs)
-    It does NOT magically know the future – it's a structured extrapolation.
-    """
-    if not signal or not features:
-        return []
-
-    direction = signal["direction"]
-    base_conf = signal["confidence"]
-    last_price = features["last_price"]
-    ema_fast_val = features["ema_fast"]
-    ema_long_val = features["ema_long"]
-    vol_24h = features.get("vol_24h", 0.0)
-    atr_14 = features.get("atr_14", 0.0)
-
-    # Rough trend strength score
-    trend_strength = abs(ema_fast_val - ema_long_val) / (last_price + 1e-9)
-    trend_strength_score = min(trend_strength * 100, 30)  # cap
-
-    # Volatility score
-    vol_score = 0.0
-    if vol_24h and not math.isnan(vol_24h):
-        vol_score = min(vol_24h * 1000, 30)  # just to classify calm vs wild
-
-    days = ["Today / next 24h", "Day 2", "Day 3", "Day 4", "Day 5"]
-    outlook = []
-
-    for i, label in enumerate(days):
-        # Confidence decays a bit further into the week
-        day_conf = max(min(base_conf - 0.03 * i, 0.95), 0.35)
-
-        if direction == "FLAT":
-            bias = "CHOPPY / RANGE"
-        else:
-            # If confidence drops a lot, we call it choppy
-            if day_conf < 0.5:
-                bias = "CHOPPY / RANGE"
-            else:
-                bias = direction
-
-        # Text explanation
-        if bias == "UP":
-            note = "Bullish bias continues while current uptrend and demand factors stay intact."
-        elif bias == "DOWN":
-            note = "Bearish bias continues while current downtrend and demand factors stay intact."
-        else:
-            note = "Price likely to be more sideways / noisy; trend edge is weaker here."
-
-        # Add a volatility tag
-        if vol_score > 20:
-            note += " Volatility: high – expect bigger swings."
-        elif vol_score > 10:
-            note += " Volatility: moderate."
-        else:
-            note += " Volatility: relatively calm (for NatGas)."
-
-        outlook.append(
-            {
-                "label": label,
-                "bias": bias,
-                "confidence": day_conf,
-                "trend_strength": trend_strength_score,
-                "note": note,
-            }
-        )
-
-    return outlook
-
-
-# ========= FLASK ROUTE ========= #
-
-@app.route("/", methods=["GET", "POST"])
-def index():
-    account_balance = None
-    risk_pct = 1.0
-    position_size = None
-
-    signal = None
-    weekly_outlook = []
-    last_price = None
-    timestamp = None
-    error_msg = None
-    feats = None
-    weather_info = None
-    weather_error = None
-    cl_impact = None
-
-    # 1) Market data (cached)
-    feats, data_error = get_latest_features_cached()
-    if data_error:
-        error_msg = data_error
-    else:
-        timestamp = feats["timestamp"]
-        last_price = feats["last_price"]
-
-    # 2) Weather (cached)
-    weather_score = 0.0
-    weather_info, weather_error, ws = get_weather_summary_cached()
-    weather_score = ws
-
-    # 3) Signal + crude + weekly outlook
-    if feats is not None and error_msg is None:
-        cl_impact = compute_crude_impact(feats)
-        signal = make_signal(feats, weather_score)
-        weekly_outlook = make_weekly_forecast(signal, feats)
-
-    # 4) Position sizing
-    if request.method == "POST":
-        try:
-            account_balance = float(request.form.get("account_balance", "0"))
-        except ValueError:
-            account_balance = 0.0
-
-        try:
-            risk_pct = float(request.form.get("risk_pct", "1.0"))
-        except ValueError:
-            risk_pct = 1.0
-
-        if signal and account_balance and last_price:
-            risk_amount = account_balance * (risk_pct / 100.0)
-            stop_distance = abs(last_price - signal["stop_loss"])
-            if stop_distance > 0:
-                position_size = risk_amount / stop_distance
-
-    return render_template(
-        "index.html",
-        signal=signal,
-        weekly_outlook=weekly_outlook,
-        last_price=last_price,
-        timestamp=timestamp,
-        account_balance=account_balance,
-        risk_pct=risk_pct,
-        position_size=position_size,
-        error_msg=error_msg,
-        feats=feats,
-        weather_info=weather_info,
-        weather_error=weather_error,
-        cl_impact=cl_impact,
-    )
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000, debug=True)
+            <p class="small" style="margin-top:6px;">
+                How to use:
+            </p>
+            <ul class="small">
+                <li>Use the <b>Main trend signal</b> for direction (BUY / SELL / NO TRADE).</li>
+                <li>Use the <b>Weekly outlook</b> to decide scalp vs swing.</li>
+                <li>Combine with your own levels & risk management. This is a helper, not guaranteed profit.</li>
+            </ul>
+        </div>
+    </div>
+</div>
+</body>
+</html>
