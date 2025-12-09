@@ -1,10 +1,94 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>NatGas Bot</title>
+    <meta charset="UTF-8">
+    <title>NatGas Trend Bot</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 700px;
+            margin: 20px auto;
+            padding: 10px;
+        }
+        .card {
+            border: 1px solid #ddd;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+        .error {
+            color: red;
+        }
+        .label {
+            font-weight: bold;
+        }
+        input {
+            width: 100%;
+            padding: 6px;
+            margin: 4px 0;
+        }
+        button {
+            padding: 8px 16px;
+        }
+    </style>
 </head>
 <body>
     <h1>NatGas Trend Bot</h1>
-    <p>Your bot is running successfully!</p>
+
+    {% if error_msg %}
+        <div class="card error">
+            <strong>Error fetching data or generating signal:</strong><br>
+            {{ error_msg }}
+        </div>
+    {% endif %}
+
+    {% if last_price %}
+        <div class="card">
+            <p><span class="label">Last price:</span> {{ last_price }}</p>
+            {% if timestamp %}
+                <p><span class="label">Data time (UTC):</span> {{ timestamp }}</p>
+            {% endif %}
+        </div>
+    {% endif %}
+
+    {% if signal %}
+        <div class="card">
+            <h2>Signal</h2>
+            <p><span class="label">Direction:</span> {{ signal.direction }}</p>
+            <p><span class="label">Confidence:</span> {{ (signal.confidence * 100) | round(1) }}%</p>
+            <p><span class="label">Stop-loss:</span> {{ signal.stop_loss | round(4) }}</p>
+            <p><span class="label">Take-profit:</span> {{ signal.take_profit | round(4) }}</p>
+            <p><span class="label">Stop distance (%):</span> {{ (signal.stop_pct * 100) | round(2) }}%</p>
+            <p><span class="label">TP distance (%):</span> {{ (signal.tp_pct * 100) | round(2) }}%</p>
+        </div>
+    {% endif %}
+
+    <div class="card">
+        <h2>Position size calculator</h2>
+        <form method="post">
+            <label>
+                Account balance:
+                <input type="number" step="0.01" name="account_balance"
+                       value="{{ account_balance if account_balance else '' }}">
+            </label>
+            <label>
+                Risk per trade (%):
+                <input type="number" step="0.1" name="risk_pct"
+                       value="{{ risk_pct }}">
+            </label>
+            <button type="submit">Calculate position size</button>
+        </form>
+
+        {% if position_size %}
+            <p><span class="label">Suggested position size (units):</span>
+                {{ position_size | round(2) }}</p>
+        {% endif %}
+    </div>
+
+    <p style="font-size: 0.85em; color:#555;">
+        Data source: Yahoo Finance (symbol NG=F). This tool uses EMAs, RSI and
+        volatility from past candles to generate a rough directional signal.
+        It is NOT guaranteed profit. Trade at your own risk.
+    </p>
 </body>
 </html>
