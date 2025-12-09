@@ -2,120 +2,333 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>NatGas Trend Bot</title>
+    <title>NatGas Weather-Aware Trend Bot</title>
     <style>
+        :root {
+            --bg: #020617;
+            --bg-alt: #020617;
+            --card: #020617;
+            --card-alt: #0b1220;
+            --border: #1f2937;
+            --text: #e5e7eb;
+            --muted: #9ca3af;
+            --accent: #38bdf8;
+            --green: #22c55e;
+            --red: #ef4444;
+            --yellow: #eab308;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
         body {
-            font-family: Arial, sans-serif;
-            max-width: 1000px;
-            margin: 20px auto;
-            padding: 10px;
+            margin: 0;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: radial-gradient(circle at top left, #0f172a 0, #020617 45%, #000 100%);
+            color: var(--text);
         }
-        h1, h2, h3 {
-            margin-bottom: 8px;
+
+        .page {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px 16px 40px;
         }
+
+        header {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 18px;
+        }
+
+        .title-block h1 {
+            font-size: 1.8rem;
+            margin: 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .title-pill {
+            font-size: 0.8rem;
+            padding: 3px 9px;
+            border-radius: 999px;
+            background: rgba(56, 189, 248, 0.1);
+            color: var(--accent);
+            border: 1px solid rgba(56, 189, 248, 0.4);
+        }
+
+        .title-sub {
+            margin-top: 4px;
+            font-size: 0.9rem;
+            color: var(--muted);
+        }
+
+        .timestamp {
+            font-size: 0.85rem;
+            color: var(--muted);
+            text-align: right;
+        }
+
+        .timestamp span {
+            color: var(--accent);
+        }
+
         .grid {
             display: grid;
             grid-template-columns: 1fr;
-            gap: 15px;
+            gap: 16px;
         }
-        @media (min-width: 900px) {
+
+        @media (min-width: 880px) {
             .grid-2 {
+                grid-template-columns: 1.1fr 0.9fr;
+            }
+            .grid-2-even {
                 grid-template-columns: 1fr 1fr;
             }
         }
+
         .card {
-            border: 1px solid #ddd;
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 15px;
+            border-radius: 14px;
+            padding: 14px 14px 16px;
+            background: linear-gradient(135deg, rgba(15,23,42,0.94), rgba(15,23,42,0.98));
+            border: 1px solid rgba(148, 163, 184, 0.15);
+            box-shadow: 0 18px 45px rgba(15,23,42,0.75);
         }
+
+        .card-soft {
+            border-radius: 14px;
+            padding: 14px 14px 16px;
+            background: radial-gradient(circle at top left, #111827, #020617);
+            border: 1px solid rgba(55, 65, 81, 0.7);
+        }
+
+        .card h2 {
+            font-size: 1.1rem;
+            margin: 0 0 10px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .card h2 span.dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 999px;
+            background: var(--accent);
+            box-shadow: 0 0 8px rgba(56,189,248,0.9);
+        }
+
         .error {
-            color: #b40000;
-            background: #ffe8e8;
-            border-color: #ffb3b3;
+            border-color: rgba(248, 113, 113, 0.7);
+            background: linear-gradient(135deg, rgba(127,29,29,0.9), rgba(15,23,42,0.96));
         }
+
         .label {
-            font-weight: bold;
+            font-weight: 600;
+            font-size: 0.9rem;
         }
-        input {
-            width: 100%;
-            padding: 6px;
-            margin: 4px 0;
+
+        p {
+            margin: 4px 0 6px;
+            font-size: 0.9rem;
         }
-        button {
-            padding: 8px 16px;
-            margin-top: 6px;
+
+        .muted {
+            color: var(--muted);
         }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 10px;
+            border-radius: 999px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+        }
+
+        .badge-up {
+            background: rgba(34,197,94,0.12);
+            color: #bbf7d0;
+            border: 1px solid rgba(34,197,94,0.6);
+        }
+
+        .badge-down {
+            background: rgba(248,113,113,0.16);
+            color: #fecaca;
+            border: 1px solid rgba(248,113,113,0.7);
+        }
+
+        .badge-flat {
+            background: rgba(148,163,184,0.18);
+            color: #e5e7eb;
+            border: 1px solid rgba(148,163,184,0.7);
+        }
+
+        .pill {
+            display: inline-block;
+            font-size: 0.78rem;
+            padding: 2px 7px;
+            border-radius: 999px;
+            background: rgba(148,163,184,0.2);
+            color: var(--muted);
+        }
+
+        .pill-strong {
+            background: rgba(56,189,248,0.18);
+            color: var(--accent);
+        }
+
+        .pill-risk {
+            background: rgba(234,179,8,0.18);
+            color: var(--yellow);
+        }
+
         table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 0.9em;
+            font-size: 0.85rem;
+            margin-top: 4px;
         }
+
         th, td {
-            border-bottom: 1px solid #eee;
-            padding: 6px 4px;
+            border-bottom: 1px solid rgba(31, 41, 55, 0.9);
+            padding: 6px 6px;
             text-align: left;
         }
+
         th {
-            font-weight: bold;
+            font-weight: 600;
+            color: var(--muted);
+            font-size: 0.8rem;
         }
-        .badge {
-            display: inline-block;
-            padding: 3px 8px;
-            border-radius: 12px;
-            font-size: 0.85em;
+
+        tr:last-child td {
+            border-bottom: none;
         }
-        .badge-up {
-            background: #e0ffec;
-            color: #047a32;
+
+        input {
+            width: 100%;
+            padding: 7px 9px;
+            margin: 3px 0 6px;
+            border-radius: 8px;
+            border: 1px solid rgba(55, 65, 81, 0.9);
+            background: linear-gradient(135deg, #020617, #020617);
+            color: var(--text);
+            font-size: 0.9rem;
         }
-        .badge-down {
-            background: #ffe3e3;
-            color: #b00000;
+
+        input:focus {
+            outline: 1px solid var(--accent);
+            border-color: var(--accent);
+            box-shadow: 0 0 0 1px rgba(56,189,248,0.6);
         }
-        .badge-flat {
-            background: #f0f0f0;
-            color: #444;
+
+        button {
+            padding: 7px 14px;
+            margin-top: 6px;
+            border-radius: 999px;
+            border: none;
+            background: linear-gradient(135deg, #38bdf8, #22c55e);
+            color: #0b1120;
+            font-weight: 600;
+            font-size: 0.9rem;
+            cursor: pointer;
+            box-shadow: 0 10px 22px rgba(56,189,248,0.35);
         }
+
+        button:hover {
+            filter: brightness(1.05);
+        }
+
+        ul.small {
+            padding-left: 18px;
+        }
+
         .small {
-            font-size: 0.85em;
-            color: #555;
+            font-size: 0.8rem;
+            color: var(--muted);
+        }
+
+        .metric-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 18px;
+            font-size: 0.86rem;
+        }
+
+        .metric-row span.value {
+            color: var(--accent);
+            font-weight: 600;
+        }
+
+        .split-line {
+            height: 1px;
+            background: linear-gradient(to right, transparent, rgba(148,163,184,0.5), transparent);
+            margin: 6px 0 8px;
         }
     </style>
 </head>
 <body>
-    <h1>NatGas Trend Bot</h1>
+<div class="page">
+    <header>
+        <div class="title-block">
+            <h1>
+                NatGas Trend Bot
+                <span class="title-pill">Tech + Weather + Cross-market</span>
+            </h1>
+            <div class="title-sub">
+                Live directional bias (BUY/SELL/NO TRADE) using price history, crude oil, and US + Europe weather.
+            </div>
+        </div>
+        <div class="timestamp">
+            {% if timestamp %}
+                <div>Market data: <span>{{ timestamp }}</span> UTC</div>
+            {% endif %}
+        </div>
+    </header>
 
     {% if error_msg %}
         <div class="card error">
-            <strong>Error fetching market data:</strong><br>
-            {{ error_msg }}
+            <h2><span class="dot"></span> Market data error</h2>
+            <p>{{ error_msg }}</p>
         </div>
     {% endif %}
 
     {% if weather_error %}
         <div class="card error">
-            <strong>Weather warning:</strong><br>
-            {{ weather_error }}
+            <h2><span class="dot"></span> Weather data warning</h2>
+            <p>{{ weather_error }}</p>
         </div>
     {% endif %}
 
     <div class="grid grid-2">
         <div class="card">
-            <h2>Market snapshot</h2>
+            <h2><span class="dot"></span> Market snapshot</h2>
             {% if last_price %}
-                <p><span class="label">NatGas last price:</span> {{ last_price | round(4) }}</p>
-                {% if timestamp %}
-                    <p><span class="label">Data time (UTC):</span> {{ timestamp }}</p>
-                {% endif %}
+                <div class="metric-row">
+                    <span class="label">NatGas:</span>
+                    <span class="value">{{ last_price | round(4) }}</span>
+                    {% if feats %}
+                        <span class="label">Crude Oil:</span>
+                        <span class="value">{{ feats.cl_price | round(4) }}</span>
+                    {% endif %}
+                </div>
             {% else %}
                 <p>No NatGas price available right now.</p>
             {% endif %}
 
             {% if feats %}
-                <p><span class="label">Crude Oil (CL=F):</span> {{ feats.cl_price | round(4) }}</p>
-                <p><span class="label">NG / CL ratio z-score:</span>
-                    {{ feats.ng_cl_ratio_z | round(2) }}
+                <div class="split-line"></div>
+                <p>
+                    <span class="label">NG / CL ratio z-score:</span>
+                    <span class="value">{{ feats.ng_cl_ratio_z | round(2) }}</span>
                     <span class="small">
                         {% if feats.ng_cl_ratio_z > 1 %}
                             (NatGas expensive vs oil)
@@ -130,40 +343,59 @@
         </div>
 
         <div class="card">
-            <h2>Signal</h2>
+            <h2><span class="dot"></span> Trade signal</h2>
             {% if signal %}
                 <p>
                     <span class="label">Direction:</span>
                     {% if signal.direction == "UP" %}
-                        <span class="badge badge-up">UP (bullish)</span>
+                        <span class="badge badge-up">UP · Bullish bias</span>
                     {% elif signal.direction == "DOWN" %}
-                        <span class="badge badge-down">DOWN (bearish)</span>
+                        <span class="badge badge-down">DOWN · Bearish bias</span>
                     {% else %}
-                        <span class="badge badge-flat">FLAT / NO CLEAR EDGE</span>
+                        <span class="badge badge-flat">FLAT · No clear edge</span>
                     {% endif %}
                 </p>
+
                 <p>
                     <span class="label">Suggested action:</span>
                     {% if signal.direction == "UP" %}
-                        BUY / go LONG
+                        <span style="color: var(--green); font-weight: 600;">BUY / go LONG</span>
                     {% elif signal.direction == "DOWN" %}
-                        SELL / go SHORT
+                        <span style="color: var(--red); font-weight: 600;">SELL / go SHORT</span>
                     {% else %}
-                        NO TRADE / stay out
+                        <span style="color: var(--muted); font-weight: 600;">NO TRADE / stay out</span>
                     {% endif %}
+                    <span class="pill pill-risk">Not financial advice</span>
                 </p>
-                <p><span class="label">Confidence:</span> {{ (signal.confidence * 100) | round(1) }}%</p>
+
+                <p>
+                    <span class="label">Confidence:</span>
+                    <span class="value">{{ (signal.confidence * 100) | round(1) }}%</span>
+                </p>
+
                 {% if weather_info %}
-                    <p><span class="label">Weather impact:</span> {{ weather_info.impact_text }}</p>
+                    <p>
+                        <span class="label">Weather impact:</span>
+                        <span class="small">{{ weather_info.impact_text }}</span>
+                    </p>
                 {% endif %}
-                <p><span class="label">Stop-loss:</span> {{ signal.stop_loss | round(4) }}</p>
-                <p><span class="label">Take-profit:</span> {{ signal.take_profit | round(4) }}</p>
-                <p><span class="label">Stop distance:</span> {{ (signal.stop_pct * 100) | round(2) }}%</p>
-                <p><span class="label">TP distance:</span> {{ (signal.tp_pct * 100) | round(2) }}%</p>
+
+                <div class="split-line"></div>
+
+                <p>
+                    <span class="label">Stop-loss:</span> {{ signal.stop_loss | round(4) }}<br>
+                    <span class="label">Take-profit:</span> {{ signal.take_profit | round(4) }}
+                </p>
                 <p class="small">
-                    Signal combines:<br>
-                    • EMAs, RSI, Bollinger, ATR, MACD, NG/Oil ratio<br>
-                    • US + Europe weather (now + next 7 days, HDD & CDD)
+                    Stop distance:
+                    {{ (signal.stop_pct * 100) | round(2) }}% ·
+                    TP distance:
+                    {{ (signal.tp_pct * 100) | round(2) }}%
+                </p>
+
+                <p class="small">
+                    Signal combines: EMAs, RSI, Bollinger, ATR, MACD, NG/Oil ratio,
+                    plus US + EU weather (HDD & CDD) for the next 7 days.
                 </p>
             {% else %}
                 <p>No signal available.</p>
@@ -172,8 +404,8 @@
     </div>
 
     {% if feats %}
-        <div class="card">
-            <h2>Technical indicators (what the bot sees)</h2>
+        <div class="card-soft" style="margin-top: 10px;">
+            <h2><span class="dot"></span> Technical view</h2>
             <table>
                 <tr>
                     <th>Indicator</th>
@@ -185,8 +417,8 @@
                     <td>{{ feats.ema_fast | round(4) }}</td>
                     <td rowspan="3">
                         Short = EMA10, Medium = EMA30, Long = EMA50.<br>
-                        If EMA10 &gt; EMA30 &gt; EMA50 → uptrend.<br>
-                        If EMA10 &lt; EMA30 &lt; EMA50 → downtrend.
+                        If EMA10 &gt; EMA30 &gt; EMA50 → trending up.<br>
+                        If EMA10 &lt; EMA30 &lt; EMA50 → trending down.
                     </td>
                 </tr>
                 <tr>
@@ -202,13 +434,13 @@
                     <td>{{ feats.rsi | round(2) }}</td>
                     <td>
                         &lt; 30 = oversold, &gt; 70 = overbought.<br>
-                        Mid-range = normal.
+                        Mid-range = balanced.
                     </td>
                 </tr>
                 <tr>
                     <td>24h volatility</td>
                     <td>{{ (feats.vol_24h * 100) | round(2) }}%</td>
-                    <td>How much price moves in a day (bigger = more risk).</td>
+                    <td>Average percentage move over the last 24 hours.</td>
                 </tr>
                 <tr>
                     <td>ATR 14</td>
@@ -216,7 +448,7 @@
                         {{ feats.atr_14 | round(4) }}
                         ({{ ((feats.atr_14 / (last_price or 1)) * 100) | round(2) }}%)
                     </td>
-                    <td>Average True Range, used to size the stop.</td>
+                    <td>Average True Range; used for dynamic stop sizing.</td>
                 </tr>
                 <tr>
                     <td>Bollinger position</td>
@@ -242,8 +474,8 @@
     {% endif %}
 
     {% if weather_info %}
-        <div class="card">
-            <h2>Weather (US + Europe, next 7 days)</h2>
+        <div class="card-soft">
+            <h2><span class="dot"></span> Weather (US + Europe, next 7 days)</h2>
             <table>
                 <tr>
                     <th>Region</th>
@@ -267,16 +499,16 @@
                 {% endfor %}
             </table>
             <p class="small">
-                HDD (Heating Degree Days) ↑ = colder than 18°C → more heating demand.<br>
-                CDD (Cooling Degree Days) ↑ = hotter than 18°C → more cooling demand.<br>
-                Both feed into the signal's confidence.
+                HDD (Heating Degree Days) ↑ = colder vs 18°C → higher heating demand.<br>
+                CDD (Cooling Degree Days) ↑ = hotter vs 18°C → higher cooling / power demand.<br>
+                These feed into the confidence of BUY/SELL.
             </p>
         </div>
     {% endif %}
 
-    <div class="grid grid-2">
+    <div class="grid grid-2-even">
         <div class="card">
-            <h2>Position size calculator</h2>
+            <h2><span class="dot"></span> Position size calculator</h2>
             <form method="post">
                 <label>
                     Account balance:
@@ -292,29 +524,30 @@
             </form>
 
             {% if position_size %}
-                <p><span class="label">Suggested position size (units):</span>
-                    {{ position_size | round(2) }}</p>
+                <p style="margin-top:8px;">
+                    <span class="label">Suggested position size (units):</span>
+                    <span class="value">{{ position_size | round(2) }}</span>
+                </p>
             {% endif %}
-            <p class="small">
+            <p class="small" style="margin-top:6px;">
                 Position size = (account × risk%) ÷ stop distance.<br>
-                You still choose leverage and lot size on your broker.
+                You still choose your broker leverage, lots and margin.
             </p>
         </div>
 
         <div class="card">
-            <h2>How this bot thinks</h2>
+            <h2><span class="dot"></span> How to read this</h2>
             <ul class="small">
                 <li><b>BUY</b> = bias long NatGas (UP).</li>
                 <li><b>SELL</b> = bias short NatGas (DOWN).</li>
-                <li><b>NO TRADE</b> = trend unclear or weak.</li>
-                <li>Uses price history (EMAs, RSI, volatility, MACD, NG vs Oil).</li>
-                <li>Uses US + Europe weather now & next 7 days (HDD & CDD).</li>
-                <li>Weather is already included in the confidence number.</li>
+                <li><b>NO TRADE</b> = trend or weather edge not strong enough.</li>
+                <li>Market side: EMAs, RSI, volatility, ATR, MACD, NG vs Oil.</li>
+                <li>Weather side: US + EU HDD & CDD for the next 7 days.</li>
+                <li>Weather is already blended into the confidence %.</li>
+                <li>Use this as a decision helper, not a guaranteed profit engine.</li>
             </ul>
-            <p class="small">
-                This is a helper tool, not guaranteed profit. Always manage your own risk.
-            </p>
         </div>
     </div>
+</div>
 </body>
 </html>
