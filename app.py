@@ -65,7 +65,7 @@ def get_latest_features():
         if cl is None or cl.empty:
             return None, "No Crude Oil data received from Yahoo Finance."
 
-        # Build combined DataFrame so we can compute a NG/CL ratio
+        # Combine into one DataFrame
         df = pd.DataFrame(index=ng.index)
         df["ng_close"] = ng["Close"]
         df["ng_high"] = ng["High"]
@@ -253,6 +253,7 @@ def index():
     last_price = None
     timestamp = None
     error_msg = None
+    feats = None  # always defined
 
     # 1) Fetch live data + build features
     feats, data_error = get_latest_features()
@@ -281,7 +282,7 @@ def index():
             if stop_distance > 0:
                 position_size = risk_amount / stop_distance
 
-        return render_template(
+    return render_template(
         "index.html",
         signal=signal,
         last_price=last_price,
