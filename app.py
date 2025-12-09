@@ -9,16 +9,16 @@ from flask import Flask, render_template, request
 
 app = Flask(__name__)
 
-# ========= SIMPLE CACHE (to avoid being too slow) ========= #
+# ========= SIMPLE IN-MEMORY CACHE (FAST MODE) ========= #
 
 CACHE_TTL_SECONDS = 300  # 5 minutes
 
 market_cache = {"data": None, "error": None, "timestamp": 0.0}
 weather_cache = {"info": None, "error": None, "score": 0.0, "timestamp": 0.0}
 
-# ========= WEATHER REGIONS (kept small for speed) ========= #
-
-WEATHER_LOCATIONS = [
+# ========= WEATHER REGIONS ========= #
+# FAST mode: key hubs only (fewer API calls)
+WEATHER_LOCATIONS_FAST = [
     {"name": "US Northeast (New York)", "lat": 40.71, "lon": -74.00},
     {"name": "US Midwest (Chicago)", "lat": 41.88, "lon": -87.63},
     {"name": "US Texas (Houston)", "lat": 29.76, "lon": -95.37},
@@ -27,8 +27,25 @@ WEATHER_LOCATIONS = [
     {"name": "Italy (Milan)", "lat": 45.46, "lon": 9.19},
 ]
 
+# EXTENDED mode: all regions
+WEATHER_LOCATIONS_FULL = [
+    # US
+    {"name": "US Northeast (New York)", "lat": 40.71, "lon": -74.00},
+    {"name": "US Midwest (Chicago)", "lat": 41.88, "lon": -87.63},
+    {"name": "US Texas (Houston)", "lat": 29.76, "lon": -95.37},
+    {"name": "US Southeast (Atlanta)", "lat": 33.75, "lon": -84.39},
+    {"name": "US West Coast (Los Angeles)", "lat": 34.05, "lon": -118.24},
+    # Europe
+    {"name": "UK (London)", "lat": 51.50, "lon": -0.12},
+    {"name": "Germany (Berlin)", "lat": 52.52, "lon": 13.40},
+    {"name": "Netherlands (Amsterdam)", "lat": 52.37, "lon": 4.90},
+    {"name": "France (Paris)", "lat": 48.86, "lon": 2.35},
+    {"name": "Italy (Milan)", "lat": 45.46, "lon": 9.19},
+    {"name": "Spain (Madrid)", "lat": 40.42, "lon": -3.70},
+]
 
-# ========= WEATHER HELPERS (for demand + confidence) ========= #
+
+# ========= WEATHER HELPERS ========= #
 
 def fetch_weather_for_location(lat: float, lon: float):
     """
@@ -57,20 +74,16 @@ def fetch_weather_for_location(lat: float, lon: float):
     return current_temp, hdd, cdd
 
 
-def compute_weather_summary():
+def compute_weather_summary(locations):
     """
-    Aggregate weather across key regions.
-    Returns:
-      weather_info (dict),
-      weather_error (str or None),
-      weather_score (float in [-0.25, +0.25])
+    Core weather logic used for both FAST and FULL modes.
     """
     locations_data = []
     total_hdd = 0.0
     total_cdd = 0.0
     count = 0
 
-    for loc in WEATHER_LOCATIONS:
+    for loc in locations:
         try:
             temp, hdd, cdd = fetch_weather_for_location(loc["lat"], loc["lon"])
             locations_data.append(
@@ -80,6 +93,7 @@ def compute_weather_summary():
             total_cdd += cdd
             count += 1
         except Exception:
+            # Skip this location if there is an error
             continue
 
     if count == 0:
@@ -88,38 +102,40 @@ def compute_weather_summary():
     avg_hdd = total_hdd / count
     avg_cdd = total_cdd / count
 
-    # Make a rough demand score:
+    # Rough scaling: bigger number => stronger demand
     heating_strength = avg_hdd / 100.0
     cooling_strength = avg_cdd / 100.0
 
     weather_score = 0.0
 
-    # Colder/Hotter = bullish NatGas
+    # Cold = heating demand = bullish for NatGas
     if heating_strength > 1.5:
         weather_score += 0.20
     elif heating_strength > 0.8:
         weather_score += 0.10
 
+    # Hot = cooling demand = bullish for NatGas
     if cooling_strength > 1.5:
         weather_score += 0.15
     elif cooling_strength > 0.8:
         weather_score += 0.07
 
-    # Mild both sides = bearish
+    # Very mild = bearish
     if heating_strength < 0.4 and cooling_strength < 0.4:
         weather_score -= 0.15
 
-    # Clamp
+    # Clamp to [-0.25, +0.25]
     weather_score = max(min(weather_score, 0.25), -0.25)
 
+    # Text for UI
     if weather_score > 0.15:
-        impact_text = "Weather: strongly supportive (high heating/cooling demand)."
+        impact_text = "Weather strongly bullish for NatGas (high heating/cooling demand)."
     elif weather_score > 0.05:
-        impact_text = "Weather: slightly supportive for NatGas."
+        impact_text = "Weather slightly bullish for NatGas."
     elif weather_score < -0.05:
-        impact_text = "Weather: slightly against NatGas (mild temperatures)."
+        impact_text = "Weather slightly bearish for NatGas (demand looks mild)."
     else:
-        impact_text = "Weather: roughly neutral impact on NatGas."
+        impact_text = "Weather roughly neutral for NatGas demand."
 
     weather_info = {
         "locations": locations_data,
@@ -132,7 +148,20 @@ def compute_weather_summary():
     return weather_info, None, weather_score
 
 
-def get_weather_summary_cached():
+def get_weather_summary_fresh_fast():
+    """FAST mode: fewer regions."""
+    return compute_weather_summary(WEATHER_LOCATIONS_FAST)
+
+
+def get_weather_summary_full():
+    """EXTENDED mode: all regions, no cache (slower)."""
+    return compute_weather_summary(WEATHER_LOCATIONS_FULL)
+
+
+def get_weather_summary_cached_fast():
+    """
+    FAST mode with 5-minute cache so we don’t hit the API on every page load.
+    """
     now = time.time()
     age = now - weather_cache["timestamp"]
     if age < CACHE_TTL_SECONDS and weather_cache["info"] is not None:
@@ -142,12 +171,22 @@ def get_weather_summary_cached():
             weather_cache["score"],
         )
 
-    info, err, score = compute_weather_summary()
+    info, err, score = get_weather_summary_fresh_fast()
     weather_cache["info"] = info
     weather_cache["error"] = err
     weather_cache["score"] = score
     weather_cache["timestamp"] = now
     return info, err, score
+
+
+def get_weather_summary_mode(mode: str):
+    """
+    mode = "fast" or "extended"
+    """
+    if mode == "extended":
+        return get_weather_summary_full()
+    else:
+        return get_weather_summary_cached_fast()
 
 
 # ========= INDICATORS USING MARKET DATA ========= #
@@ -196,16 +235,18 @@ def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
 
 # ========= MARKET DATA + FEATURES ========= #
 
-def get_latest_features_fresh():
+def get_latest_features_fresh(period_days: int):
     """
-    Download about 60 days of hourly NG + CL data and calculate indicators.
+    Download NatGas (NG=F) and Crude Oil (CL=F) candles and calculate indicators.
+    period_days: 60 for fast, 120 for extended.
     """
     try:
+        period_str = f"{period_days}d"
         ng = yf.download(
-            "NG=F", period="60d", interval="1h", progress=False, threads=False
+            "NG=F", period=period_str, interval="1h", progress=False, threads=False
         )
         cl = yf.download(
-            "CL=F", period="60d", interval="1h", progress=False, threads=False
+            "CL=F", period=period_str, interval="1h", progress=False, threads=False
         )
 
         if ng is None or ng.empty:
@@ -264,11 +305,12 @@ def get_latest_features_fresh():
         df["ng_cl_ratio_z"] = (ratio - ratio_ma) / (ratio_std + 1e-9)
 
         # Crude oil 3-day return (impact explanation)
-        df["cl_ret_3d"] = cl_close.pct_change(72)  # 3 days ≈ 72 hours
+        # 3 days ≈ 72 hours
+        df["cl_ret_3d"] = cl_close.pct_change(72)
 
         df = df.dropna()
         if df.empty:
-            return None, "Not enough candles to calculate indicators."
+            return None, "Not enough candles to calculate extended indicators."
 
         latest = df.iloc[-1]
         ts = df.index[-1]
@@ -299,13 +341,22 @@ def get_latest_features_fresh():
         return None, f"Data error: {e}"
 
 
-def get_latest_features_cached():
+def get_latest_features_mode(mode: str):
+    """
+    mode = "fast" or "extended"
+    FAST: 60d + cache
+    EXTENDED: 120d, no cache
+    """
+    if mode == "extended":
+        return get_latest_features_fresh(period_days=120)
+
+    # fast + cached
     now = time.time()
     age = now - market_cache["timestamp"]
     if age < CACHE_TTL_SECONDS and market_cache["data"] is not None:
         return market_cache["data"], market_cache["error"]
 
-    feats, err = get_latest_features_fresh()
+    feats, err = get_latest_features_fresh(period_days=60)
     market_cache["data"] = feats
     market_cache["error"] = err
     market_cache["timestamp"] = now
@@ -315,10 +366,17 @@ def get_latest_features_cached():
 # ========= CRUDE OIL IMPACT TEXT ========= #
 
 def compute_crude_impact(features):
+    """
+    Explain what crude oil is doing and how it might affect NatGas.
+    Uses:
+      - cl_ret_3d (3-day % move)
+      - ng_cl_ratio_z (NatGas vs oil valuation)
+    """
     ratio_z = features.get("ng_cl_ratio_z", 0.0)
     cl_ret_3d = features.get("cl_ret_3d", 0.0)
     cl_ret_pct = cl_ret_3d * 100.0
 
+    # Crude trend
     if cl_ret_3d > 0.05:
         trend_label = "strong uptrend"
     elif cl_ret_3d > 0.01:
@@ -330,20 +388,31 @@ def compute_crude_impact(features):
     else:
         trend_label = "sideways / range-bound"
 
+    # Impact text combining trend + NG/CL ratio
     if trend_label.startswith("strong up") and ratio_z < -0.5:
         impact_text = (
-            "Crude is rising strongly and NatGas is cheap vs oil → supportive (bullish) backdrop."
+            "Crude oil is rising strongly and NatGas is cheap vs oil → supportive (bullish) "
+            "cross-commodity backdrop for NatGas."
         )
     elif trend_label.startswith("strong down") and ratio_z > 0.5:
         impact_text = (
-            "Crude is falling strongly and NatGas is rich vs oil → headwind (bearish) backdrop."
+            "Crude oil is falling strongly while NatGas is rich vs oil → headwind (bearish) "
+            "cross-commodity signal for NatGas."
         )
     elif "uptrend" in trend_label and ratio_z <= 0:
-        impact_text = "Crude drifting higher; NatGas fairly priced/cheap vs oil → slightly bullish."
+        impact_text = (
+            "Crude oil is drifting higher; NatGas is fairly priced or cheap vs oil → slightly bullish "
+            "for NatGas."
+        )
     elif "downtrend" in trend_label and ratio_z >= 0:
-        impact_text = "Crude drifting lower; NatGas fairly priced/expensive vs oil → slightly bearish."
+        impact_text = (
+            "Crude oil is drifting lower; NatGas is fairly priced or expensive vs oil → slightly bearish "
+            "for NatGas."
+        )
     else:
-        impact_text = "Crude/NG spread looks mostly neutral right now."
+        impact_text = (
+            "Crude oil trend and the NG/CL spread look mostly neutral for NatGas right now."
+        )
 
     return {
         "cl_ret_3d_pct": cl_ret_pct,
@@ -352,9 +421,17 @@ def compute_crude_impact(features):
     }
 
 
-# ========= SIGNAL LOGIC ========= #
+# ========= SIGNAL LOGIC (MARKET + WEATHER) ========= #
 
 def make_signal(features, weather_score: float = 0.0):
+    """
+    Uses:
+      - Market data: EMAs, RSI, Bollinger, ATR, MACD, NG/CL ratio
+      - Weather_score from US + Europe (HDD + CDD)
+    to produce:
+      - direction: UP / DOWN / FLAT
+      - confidence adjusted by weather
+    """
     last_price = features["last_price"]
     ema_fast_val = features["ema_fast"]
     ema_slow_val = features["ema_slow"]
@@ -413,13 +490,14 @@ def make_signal(features, weather_score: float = 0.0):
     confidence = base_conf + conf_adj_trend - ratio_penalty
 
     # Weather adjustment:
+    # positive weather_score = bullish NatGas
     if weather_score != 0.0:
         if direction == "UP":
-            confidence += weather_score
+            confidence += weather_score  # bullish weather helps longs
         elif direction == "DOWN":
-            confidence -= weather_score
+            confidence -= weather_score  # bullish weather hurts shorts
         else:
-            confidence += 0.5 * weather_score
+            confidence += 0.5 * weather_score  # FLAT gets nudged by weather
 
     # Clamp confidence
     confidence = float(min(max(confidence, 0.4), 0.98))
@@ -446,92 +524,14 @@ def make_signal(features, weather_score: float = 0.0):
     }
 
 
-# ========= WEEKLY OUTLOOK (simple projection) ========= #
-
-def make_weekly_forecast(signal, features):
-    """
-    Build a simple 5-day outlook based on:
-      - current direction (UP / DOWN / FLAT)
-      - confidence
-      - volatility
-      - trend strength (distance between EMAs)
-    It does NOT magically know the future – it's a structured extrapolation.
-    """
-    if not signal or not features:
-        return []
-
-    direction = signal["direction"]
-    base_conf = signal["confidence"]
-    last_price = features["last_price"]
-    ema_fast_val = features["ema_fast"]
-    ema_long_val = features["ema_long"]
-    vol_24h = features.get("vol_24h", 0.0)
-    atr_14 = features.get("atr_14", 0.0)
-
-    # Rough trend strength score
-    trend_strength = abs(ema_fast_val - ema_long_val) / (last_price + 1e-9)
-    trend_strength_score = min(trend_strength * 100, 30)  # cap
-
-    # Volatility score
-    vol_score = 0.0
-    if vol_24h and not math.isnan(vol_24h):
-        vol_score = min(vol_24h * 1000, 30)  # just to classify calm vs wild
-
-    days = ["Today / next 24h", "Day 2", "Day 3", "Day 4", "Day 5"]
-    outlook = []
-
-    for i, label in enumerate(days):
-        # Confidence decays a bit further into the week
-        day_conf = max(min(base_conf - 0.03 * i, 0.95), 0.35)
-
-        if direction == "FLAT":
-            bias = "CHOPPY / RANGE"
-        else:
-            # If confidence drops a lot, we call it choppy
-            if day_conf < 0.5:
-                bias = "CHOPPY / RANGE"
-            else:
-                bias = direction
-
-        # Text explanation
-        if bias == "UP":
-            note = "Bullish bias continues while current uptrend and demand factors stay intact."
-        elif bias == "DOWN":
-            note = "Bearish bias continues while current downtrend and demand factors stay intact."
-        else:
-            note = "Price likely to be more sideways / noisy; trend edge is weaker here."
-
-        # Add a volatility tag
-        if vol_score > 20:
-            note += " Volatility: high – expect bigger swings."
-        elif vol_score > 10:
-            note += " Volatility: moderate."
-        else:
-            note += " Volatility: relatively calm (for NatGas)."
-
-        outlook.append(
-            {
-                "label": label,
-                "bias": bias,
-                "confidence": day_conf,
-                "trend_strength": trend_strength_score,
-                "note": note,
-            }
-        )
-
-    return outlook
-
-
-# ========= FLASK ROUTE ========= #
+# ========= FLASK WEB APP ========= #
 
 @app.route("/", methods=["GET", "POST"])
 def index():
     account_balance = None
     risk_pct = 1.0
     position_size = None
-
     signal = None
-    weekly_outlook = []
     last_price = None
     timestamp = None
     error_msg = None
@@ -540,26 +540,37 @@ def index():
     weather_error = None
     cl_impact = None
 
-    # 1) Market data (cached)
-    feats, data_error = get_latest_features_cached()
+    # Extended toggle (from checkbox)
+    extended_mode = False
+    if request.method == "POST":
+        extended_mode = bool(request.form.get("extended_mode"))
+
+    mode = "extended" if extended_mode else "fast"
+    mode_label = (
+        "EXTENDED mode (more history + weather, slower)"
+        if extended_mode
+        else "FAST mode (cached, lighter)"
+    )
+
+    # 1) Market data
+    feats, data_error = get_latest_features_mode(mode)
     if data_error:
         error_msg = data_error
     else:
         timestamp = feats["timestamp"]
         last_price = feats["last_price"]
 
-    # 2) Weather (cached)
+    # 2) Weather data
     weather_score = 0.0
-    weather_info, weather_error, ws = get_weather_summary_cached()
+    weather_info, weather_error, ws = get_weather_summary_mode(mode)
     weather_score = ws
 
-    # 3) Signal + crude + weekly outlook
+    # 3) Build signal + crude impact if we have market features
     if feats is not None and error_msg is None:
         cl_impact = compute_crude_impact(feats)
         signal = make_signal(feats, weather_score)
-        weekly_outlook = make_weekly_forecast(signal, feats)
 
-    # 4) Position sizing
+    # 4) Position sizing from user input
     if request.method == "POST":
         try:
             account_balance = float(request.form.get("account_balance", "0"))
@@ -580,7 +591,6 @@ def index():
     return render_template(
         "index.html",
         signal=signal,
-        weekly_outlook=weekly_outlook,
         last_price=last_price,
         timestamp=timestamp,
         account_balance=account_balance,
@@ -590,6 +600,8 @@ def index():
         feats=feats,
         weather_info=weather_info,
         weather_error=weather_error,
+        extended_mode=extended_mode,
+        mode_label=mode_label,
         cl_impact=cl_impact,
     )
 
