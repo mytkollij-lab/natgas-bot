@@ -1,7 +1,7 @@
 import math
-import time
 import json
-import requests
+import time
+from urllib.request import urlopen
 
 import pandas as pd
 import yfinance as yf
@@ -9,17 +9,15 @@ from flask import Flask, render_template, request
 
 app = Flask(__name__)
 
-# ---------------------------------------------------------------------
-# SIMPLE CACHE (keeps the app from refetching every time = faster)
-# ---------------------------------------------------------------------
+# ========= SIMPLE CACHE (to avoid being too slow) ========= #
+
 CACHE_TTL_SECONDS = 300  # 5 minutes
 
 market_cache = {"data": None, "error": None, "timestamp": 0.0}
 weather_cache = {"info": None, "error": None, "score": 0.0, "timestamp": 0.0}
 
-# ---------------------------------------------------------------------
-# WEATHER REGIONS (US + Europe)
-# ---------------------------------------------------------------------
+# ========= WEATHER REGIONS (kept small for speed) ========= #
+
 WEATHER_LOCATIONS = [
     {"name": "US Northeast (New York)", "lat": 40.71, "lon": -74.00},
     {"name": "US Midwest (Chicago)", "lat": 41.88, "lon": -87.63},
@@ -30,13 +28,12 @@ WEATHER_LOCATIONS = [
 ]
 
 
-# ---------------------------------------------------------------------
-# WEATHER HELPERS
-# ---------------------------------------------------------------------
+# ========= WEATHER HELPERS (for demand + confidence) ========= #
+
 def fetch_weather_for_location(lat: float, lon: float):
     """
     Use Open-Meteo free API to get next 7 days of hourly temperature.
-    Returns: (current_temp, HDD_7d, CDD_7d) with base 18°C.
+    Return: (current_temp, HDD_7d, CDD_7d) with base 18°C.
     """
     base_temp = 18.0
     url = (
@@ -44,9 +41,8 @@ def fetch_weather_for_location(lat: float, lon: float):
         f"?latitude={lat}&longitude={lon}"
         "&hourly=temperature_2m&forecast_days=7"
     )
-    resp = requests.get(url, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
+    with urlopen(url, timeout=10) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
 
     temps = data.get("hourly", {}).get("temperature_2m", [])
     if not temps:
@@ -58,7 +54,6 @@ def fetch_weather_for_location(lat: float, lon: float):
     for t in temps:
         hdd += max(0.0, base_temp - t)
         cdd += max(0.0, t - base_temp)
-
     return current_temp, hdd, cdd
 
 
@@ -93,12 +88,13 @@ def compute_weather_summary():
     avg_hdd = total_hdd / count
     avg_cdd = total_cdd / count
 
-    # very rough “demand” score
+    # Make a rough demand score:
     heating_strength = avg_hdd / 100.0
     cooling_strength = avg_cdd / 100.0
+
     weather_score = 0.0
 
-    # colder/ hotter = bullish NatGas
+    # Colder/Hotter = bullish NatGas
     if heating_strength > 1.5:
         weather_score += 0.20
     elif heating_strength > 0.8:
@@ -109,10 +105,11 @@ def compute_weather_summary():
     elif cooling_strength > 0.8:
         weather_score += 0.07
 
-    # both mild = slightly bearish
+    # Mild both sides = bearish
     if heating_strength < 0.4 and cooling_strength < 0.4:
         weather_score -= 0.15
 
+    # Clamp
     weather_score = max(min(weather_score, 0.25), -0.25)
 
     if weather_score > 0.15:
@@ -131,6 +128,7 @@ def compute_weather_summary():
         "impact_text": impact_text,
         "score": weather_score,
     }
+
     return weather_info, None, weather_score
 
 
@@ -152,9 +150,8 @@ def get_weather_summary_cached():
     return info, err, score
 
 
-# ---------------------------------------------------------------------
-# SIMPLE INDICATORS
-# ---------------------------------------------------------------------
+# ========= INDICATORS USING MARKET DATA ========= #
+
 def ema(series: pd.Series, window: int) -> pd.Series:
     return series.ewm(span=window, adjust=False).mean()
 
@@ -163,8 +160,10 @@ def rsi(series: pd.Series, window: int = 14) -> pd.Series:
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
+
     avg_gain = gain.rolling(window=window).mean()
     avg_loss = loss.rolling(window=window).mean()
+
     rs = avg_gain / (avg_loss + 1e-9)
     return 100 - (100 / (1 + rs))
 
@@ -195,16 +194,19 @@ def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
     return macd_line, signal_line, hist
 
 
-# ---------------------------------------------------------------------
-# MARKET DATA + FEATURES
-# ---------------------------------------------------------------------
+# ========= MARKET DATA + FEATURES ========= #
+
 def get_latest_features_fresh():
     """
     Download about 60 days of hourly NG + CL data and calculate indicators.
     """
     try:
-        ng = yf.download("NG=F", period="60d", interval="1h", progress=False, threads=False)
-        cl = yf.download("CL=F", period="60d", interval="1h", progress=False, threads=False)
+        ng = yf.download(
+            "NG=F", period="60d", interval="1h", progress=False, threads=False
+        )
+        cl = yf.download(
+            "CL=F", period="60d", interval="1h", progress=False, threads=False
+        )
 
         if ng is None or ng.empty:
             return None, "No NatGas data received from Yahoo Finance."
@@ -261,8 +263,8 @@ def get_latest_features_fresh():
         ratio_std = ratio.rolling(50).std()
         df["ng_cl_ratio_z"] = (ratio - ratio_ma) / (ratio_std + 1e-9)
 
-        # crude 3-day return
-        df["cl_ret_3d"] = cl_close.pct_change(72)  # 72 hours ≈ 3 days
+        # Crude oil 3-day return (impact explanation)
+        df["cl_ret_3d"] = cl_close.pct_change(72)  # 3 days ≈ 72 hours
 
         df = df.dropna()
         if df.empty:
@@ -310,9 +312,8 @@ def get_latest_features_cached():
     return feats, err
 
 
-# ---------------------------------------------------------------------
-# CRUDE OIL IMPACT TEXT
-# ---------------------------------------------------------------------
+# ========= CRUDE OIL IMPACT TEXT ========= #
+
 def compute_crude_impact(features):
     ratio_z = features.get("ng_cl_ratio_z", 0.0)
     cl_ret_3d = features.get("cl_ret_3d", 0.0)
@@ -351,9 +352,8 @@ def compute_crude_impact(features):
     }
 
 
-# ---------------------------------------------------------------------
-# SIGNAL LOGIC (BUY / SELL / FLAT)
-# ---------------------------------------------------------------------
+# ========= SIGNAL LOGIC ========= #
+
 def make_signal(features, weather_score: float = 0.0):
     last_price = features["last_price"]
     ema_fast_val = features["ema_fast"]
@@ -367,12 +367,15 @@ def make_signal(features, weather_score: float = 0.0):
     macd_hist = features["macd_hist"]
     ratio_z = features["ng_cl_ratio_z"]
 
+    # Trend conditions
     strong_up_trend = ema_fast_val > ema_slow_val > ema_long_val and macd_line > 0
     strong_down_trend = ema_fast_val < ema_slow_val < ema_long_val and macd_line < 0
 
+    # Overbought / oversold
     overbought = (rsi_val > 70) or (bb_pos > 0.9) or (ratio_z > 1.0)
     oversold = (rsi_val < 30) or (bb_pos < 0.1) or (ratio_z < -1.0)
 
+    # Base direction + base confidence
     if strong_up_trend and not overbought:
         direction = "UP"
         base_conf = 0.7
@@ -389,7 +392,7 @@ def make_signal(features, weather_score: float = 0.0):
         direction = "FLAT"
         base_conf = 0.5
 
-    # stop distance based on ATR/vol
+    # Stop size
     if atr_14 and not math.isnan(atr_14) and atr_14 > 0:
         atr_pct = atr_14 / (last_price + 1e-9)
         stop_pct = min(max(atr_pct * 1.5, 0.0075), 0.04)
@@ -400,13 +403,16 @@ def make_signal(features, weather_score: float = 0.0):
 
     tp_pct = stop_pct * 2.5
 
+    # Trend strength adjustment
     trend_strength = abs(ema_fast_val - ema_long_val) / (last_price + 1e-9)
     conf_adj_trend = min(trend_strength * 0.8, 0.2)
+
+    # Penalty for extreme NG/CL ratio
     ratio_penalty = min(abs(ratio_z) * 0.05, 0.15)
 
     confidence = base_conf + conf_adj_trend - ratio_penalty
 
-    # weather nudges
+    # Weather adjustment:
     if weather_score != 0.0:
         if direction == "UP":
             confidence += weather_score
@@ -415,8 +421,10 @@ def make_signal(features, weather_score: float = 0.0):
         else:
             confidence += 0.5 * weather_score
 
+    # Clamp confidence
     confidence = float(min(max(confidence, 0.4), 0.98))
 
+    # Price levels
     if direction == "UP":
         stop_loss = last_price * (1 - stop_pct)
         take_profit = last_price * (1 + tp_pct)
@@ -438,10 +446,17 @@ def make_signal(features, weather_score: float = 0.0):
     }
 
 
-# ---------------------------------------------------------------------
-# WEEKLY OUTLOOK (projection)
-# ---------------------------------------------------------------------
+# ========= WEEKLY OUTLOOK (simple projection) ========= #
+
 def make_weekly_forecast(signal, features):
+    """
+    Build a simple 5-day outlook based on:
+      - current direction (UP / DOWN / FLAT)
+      - confidence
+      - volatility
+      - trend strength (distance between EMAs)
+    It does NOT magically know the future – it's a structured extrapolation.
+    """
     if not signal or not features:
         return []
 
@@ -451,27 +466,34 @@ def make_weekly_forecast(signal, features):
     ema_fast_val = features["ema_fast"]
     ema_long_val = features["ema_long"]
     vol_24h = features.get("vol_24h", 0.0)
+    atr_14 = features.get("atr_14", 0.0)
 
+    # Rough trend strength score
     trend_strength = abs(ema_fast_val - ema_long_val) / (last_price + 1e-9)
-    trend_strength_score = min(trend_strength * 100, 30)
+    trend_strength_score = min(trend_strength * 100, 30)  # cap
+
+    # Volatility score
     vol_score = 0.0
     if vol_24h and not math.isnan(vol_24h):
-        vol_score = min(vol_24h * 1000, 30)
+        vol_score = min(vol_24h * 1000, 30)  # just to classify calm vs wild
 
     days = ["Today / next 24h", "Day 2", "Day 3", "Day 4", "Day 5"]
     outlook = []
 
     for i, label in enumerate(days):
+        # Confidence decays a bit further into the week
         day_conf = max(min(base_conf - 0.03 * i, 0.95), 0.35)
 
         if direction == "FLAT":
-            bias = "CHOPPY"
+            bias = "CHOPPY / RANGE"
         else:
+            # If confidence drops a lot, we call it choppy
             if day_conf < 0.5:
-                bias = "CHOPPY"
+                bias = "CHOPPY / RANGE"
             else:
                 bias = direction
 
+        # Text explanation
         if bias == "UP":
             note = "Bullish bias continues while current uptrend and demand factors stay intact."
         elif bias == "DOWN":
@@ -479,6 +501,7 @@ def make_weekly_forecast(signal, features):
         else:
             note = "Price likely to be more sideways / noisy; trend edge is weaker here."
 
+        # Add a volatility tag
         if vol_score > 20:
             note += " Volatility: high – expect bigger swings."
         elif vol_score > 10:
@@ -499,9 +522,8 @@ def make_weekly_forecast(signal, features):
     return outlook
 
 
-# ---------------------------------------------------------------------
-# FLASK ROUTE
-# ---------------------------------------------------------------------
+# ========= FLASK ROUTE ========= #
+
 @app.route("/", methods=["GET", "POST"])
 def index():
     account_balance = None
@@ -518,7 +540,7 @@ def index():
     weather_error = None
     cl_impact = None
 
-    # 1) Market data
+    # 1) Market data (cached)
     feats, data_error = get_latest_features_cached()
     if data_error:
         error_msg = data_error
@@ -526,12 +548,12 @@ def index():
         timestamp = feats["timestamp"]
         last_price = feats["last_price"]
 
-    # 2) Weather
+    # 2) Weather (cached)
     weather_score = 0.0
     weather_info, weather_error, ws = get_weather_summary_cached()
     weather_score = ws
 
-    # 3) Signal & outlook
+    # 3) Signal + crude + weekly outlook
     if feats is not None and error_msg is None:
         cl_impact = compute_crude_impact(feats)
         signal = make_signal(feats, weather_score)
