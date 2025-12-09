@@ -281,7 +281,7 @@ def index():
             if stop_distance > 0:
                 position_size = risk_amount / stop_distance
 
-    return render_template(
+        return render_template(
         "index.html",
         signal=signal,
         last_price=last_price,
@@ -290,6 +290,7 @@ def index():
         risk_pct=risk_pct,
         position_size=position_size,
         error_msg=error_msg,
+        feats=feats,
     )
 
 if __name__ == "__main__":
