@@ -1,20 +1,22 @@
 import math
 import time
-import requests
 
 import pandas as pd
+import requests
 import yfinance as yf
 from flask import Flask, render_template, request
 
 app = Flask(__name__)
 
-# Cache so we don't refetch constantly (faster)
+# ---------------------------------------------------------------------
+# SIMPLE CACHE (speed + less API calls)
+# ---------------------------------------------------------------------
 CACHE_TTL_SECONDS = 300  # 5 minutes
 
 market_cache = {"data": None, "error": None, "timestamp": 0.0}
 weather_cache = {"info": None, "error": None, "score": 0.0, "timestamp": 0.0}
 
-# Regions for weather (US + Europe)
+# Weather regions (US + Europe)
 WEATHER_LOCATIONS = [
     {"name": "US Northeast (New York)", "lat": 40.71, "lon": -74.00},
     {"name": "US Midwest (Chicago)", "lat": 41.88, "lon": -87.63},
@@ -26,10 +28,10 @@ WEATHER_LOCATIONS = [
 
 
 # ---------------------------------------------------------------------
-# WEATHER
+# WEATHER HELPERS
 # ---------------------------------------------------------------------
 def fetch_weather_for_location(lat: float, lon: float):
-    """Use Open-Meteo to get 7 days of hourly temps, and compute HDD/CDD."""
+    """Use Open-Meteo free API to get next 7 days of hourly temps and compute HDD/CDD."""
     base_temp = 18.0
     url = (
         "https://api.open-meteo.com/v1/forecast"
@@ -56,7 +58,7 @@ def fetch_weather_for_location(lat: float, lon: float):
 
 
 def compute_weather_summary():
-    """Aggregate HDD/CDD across regions and build a small weather score."""
+    """Aggregate weather across key regions and produce a simple score."""
     locations_data = []
     total_hdd = 0.0
     total_cdd = 0.0
@@ -84,7 +86,7 @@ def compute_weather_summary():
     cooling_strength = avg_cdd / 100.0
     weather_score = 0.0
 
-    # colder / hotter = bullish
+    # Colder / hotter → bullish NatGas
     if heating_strength > 1.5:
         weather_score += 0.20
     elif heating_strength > 0.8:
@@ -95,10 +97,11 @@ def compute_weather_summary():
     elif cooling_strength > 0.8:
         weather_score += 0.07
 
-    # very mild = bearish
+    # Very mild → bearish
     if heating_strength < 0.4 and cooling_strength < 0.4:
         weather_score -= 0.15
 
+    # Clamp
     weather_score = max(min(weather_score, 0.25), -0.25)
 
     if weather_score > 0.15:
@@ -323,8 +326,8 @@ def get_latest_features_cached():
 # CRUDE IMPACT
 # ---------------------------------------------------------------------
 def compute_crude_impact(features):
-    ratio_z = features.get("ng_cl_ratio_z", 0.0)
-    cl_ret_3d = features.get("cl_ret_3d", 0.0)
+    ratio_z = float(features.get("ng_cl_ratio_z", 0.0) or 0.0)
+    cl_ret_3d = float(features.get("cl_ret_3d", 0.0) or 0.0)
     cl_ret_pct = cl_ret_3d * 100.0
 
     if cl_ret_3d > 0.05:
@@ -365,8 +368,8 @@ def compute_crude_impact(features):
 # ---------------------------------------------------------------------
 def compute_lng_impact(features):
     lng_price = features.get("lng_price")
-    lng_ret_10d = features.get("lng_ret_10d", 0.0)
-    lng_z = features.get("lng_z", 0.0)
+    lng_ret_10d = float(features.get("lng_ret_10d", 0.0) or 0.0)
+    lng_z = float(features.get("lng_z", 0.0) or 0.0)
 
     if lng_price is None:
         return {
@@ -378,7 +381,6 @@ def compute_lng_impact(features):
 
     lng_ret_pct = lng_ret_10d * 100.0
 
-    # classify trend from 10-day return
     if lng_ret_10d > 0.15:
         trend_label = "strong uptrend"
     elif lng_ret_10d > 0.05:
@@ -390,7 +392,6 @@ def compute_lng_impact(features):
     else:
         trend_label = "sideways / range-bound"
 
-    # score in [-0.12, +0.12]
     score = 0.0
     if "uptrend" in trend_label:
         score += 0.08
@@ -423,17 +424,18 @@ def compute_lng_impact(features):
 # SIGNAL (BUY / SELL / FLAT)
 # ---------------------------------------------------------------------
 def make_signal(features, weather_score: float = 0.0, lng_score: float = 0.0):
-    last_price = features["last_price"]
-    ema_fast_val = features["ema_fast"]
-    ema_slow_val = features["ema_slow"]
-    ema_long_val = features["ema_long"]
-    rsi_val = features["rsi"]
-    vol_24h = features["vol_24h"]
-    atr_14 = features["atr_14"]
-    bb_pos = features["bb_pos"]
-    macd_line = features["macd_line"]
-    macd_hist = features["macd_hist"]
-    ratio_z = features["ng_cl_ratio_z"]
+    # Safely pull numeric values
+    last_price = float(features.get("last_price", 0.0) or 0.0)
+    ema_fast_val = float(features.get("ema_fast", 0.0) or 0.0)
+    ema_slow_val = float(features.get("ema_slow", 0.0) or 0.0)
+    ema_long_val = float(features.get("ema_long", 0.0) or 0.0)
+    rsi_val = float(features.get("rsi", 0.0) or 0.0)
+    vol_24h = features.get("vol_24h", None)
+    atr_14 = features.get("atr_14", None)
+    bb_pos = float(features.get("bb_pos", 0.5) or 0.5)
+    macd_line = float(features.get("macd_line", 0.0) or 0.0)
+    macd_hist = float(features.get("macd_hist", 0.0) or 0.0)
+    ratio_z = float(features.get("ng_cl_ratio_z", 0.0) or 0.0)
 
     strong_up_trend = ema_fast_val > ema_slow_val > ema_long_val and macd_line > 0
     strong_down_trend = ema_fast_val < ema_slow_val < ema_long_val and macd_line < 0
@@ -457,24 +459,25 @@ def make_signal(features, weather_score: float = 0.0, lng_score: float = 0.0):
         direction = "FLAT"
         base_conf = 0.5
 
-    # stop distance from ATR / vol
-    if atr_14 and not math.isnan(atr_14) and atr_14 > 0:
+    # --- Stop / TP distances (safe checks, no Series truth) ---
+    stop_pct = 0.01
+
+    if isinstance(atr_14, (int, float)) and not math.isnan(atr_14) and atr_14 > 0:
         atr_pct = atr_14 / (last_price + 1e-9)
         stop_pct = min(max(atr_pct * 1.5, 0.0075), 0.04)
-    elif vol_24h and not math.isnan(vol_24h) and vol_24h > 0:
+    elif isinstance(vol_24h, (int, float)) and not math.isnan(vol_24h) and vol_24h > 0:
         stop_pct = min(max(vol_24h * 2.0, 0.005), 0.03)
-    else:
-        stop_pct = 0.01
 
     tp_pct = stop_pct * 2.5
 
+    # --- Confidence adjustments ---
     trend_strength = abs(ema_fast_val - ema_long_val) / (last_price + 1e-9)
     conf_adj_trend = min(trend_strength * 0.8, 0.2)
     ratio_penalty = min(abs(ratio_z) * 0.05, 0.15)
 
     confidence = base_conf + conf_adj_trend - ratio_penalty
 
-    # weather influence
+    # Weather influence
     if weather_score != 0.0:
         if direction == "UP":
             confidence += weather_score
@@ -483,7 +486,7 @@ def make_signal(features, weather_score: float = 0.0, lng_score: float = 0.0):
         else:
             confidence += 0.5 * weather_score
 
-    # LNG influence (smaller, but still counts)
+    # LNG influence (smaller)
     if lng_score != 0.0:
         if direction == "UP":
             confidence += 0.5 * lng_score
@@ -494,6 +497,7 @@ def make_signal(features, weather_score: float = 0.0, lng_score: float = 0.0):
 
     confidence = float(min(max(confidence, 0.4), 0.98))
 
+    # Price levels
     if direction == "UP":
         stop_loss = last_price * (1 - stop_pct)
         take_profit = last_price * (1 + tp_pct)
@@ -525,16 +529,16 @@ def make_weekly_forecast(signal, features):
 
     direction = signal["direction"]
     base_conf = signal["confidence"]
-    last_price = features["last_price"]
-    ema_fast_val = features["ema_fast"]
-    ema_long_val = features["ema_long"]
+    last_price = float(features.get("last_price", 0.0) or 0.0)
+    ema_fast_val = float(features.get("ema_fast", 0.0) or 0.0)
+    ema_long_val = float(features.get("ema_long", 0.0) or 0.0)
     vol_24h = features.get("vol_24h", 0.0)
 
     trend_strength = abs(ema_fast_val - ema_long_val) / (last_price + 1e-9)
     trend_strength_score = min(trend_strength * 100, 30)
 
     vol_score = 0.0
-    if vol_24h and not math.isnan(vol_24h):
+    if isinstance(vol_24h, (int, float)) and not math.isnan(vol_24h):
         vol_score = min(vol_24h * 1000, 30)
 
     days = ["Today / next 24h", "Day 2", "Day 3", "Day 4", "Day 5"]
