@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>NatGas Weather-Aware Trend Bot</title>
+    <title>NatGas Weekly Trend Bot</title>
     <style>
         :root {
             --bg: #020617;
@@ -16,251 +16,132 @@
             --red: #ef4444;
             --yellow: #eab308;
         }
-
         * { box-sizing: border-box; }
-
         body {
             margin: 0;
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            background: radial-gradient(circle at top left, #0f172a 0, #020617 45%, #000 100%);
+            font-family: system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+            background: radial-gradient(circle at top left,#0f172a 0,#020617 45%,#000 100%);
             color: var(--text);
         }
-
-        .page {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px 16px 40px;
-        }
-
+        .page { max-width: 1200px; margin: 0 auto; padding: 20px 16px 40px; }
         header {
-            display: flex;
-            flex-wrap: wrap;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 10px;
-            margin-bottom: 18px;
+            display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between;
+            gap:10px; margin-bottom:18px;
         }
-
         .title-block h1 {
-            font-size: 1.8rem;
-            margin: 0;
-            display: flex;
-            align-items: center;
-            gap: 8px;
+            font-size:1.9rem; margin:0; display:flex; align-items:center; gap:8px;
         }
-
         .title-pill {
-            font-size: 0.8rem;
-            padding: 3px 9px;
-            border-radius: 999px;
-            background: rgba(56,189,248,0.1);
-            color: var(--accent);
-            border: 1px solid rgba(56,189,248,0.4);
+            font-size:0.8rem; padding:3px 9px; border-radius:999px;
+            background:rgba(56,189,248,0.1); color:var(--accent);
+            border:1px solid rgba(56,189,248,0.4);
         }
+        .title-sub { margin-top:4px; font-size:0.9rem; color:var(--muted); }
+        .timestamp { font-size:0.85rem; color:var(--muted); text-align:right; }
+        .timestamp span { color:var(--accent); }
 
-        .title-sub {
-            margin-top: 4px;
-            font-size: 0.9rem;
-            color: var(--muted);
+        .card,.card-soft {
+            border-radius:14px; padding:14px 14px 16px;
+            border:1px solid rgba(148,163,184,0.15);
         }
-
-        .timestamp {
-            font-size: 0.85rem;
-            color: var(--muted);
-            text-align: right;
-        }
-
-        .timestamp span { color: var(--accent); }
-
-        .grid {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 16px;
-        }
-
-        @media (min-width: 880px) {
-            .grid-2 {
-                grid-template-columns: 1.1fr 0.9fr;
-            }
-            .grid-2-even {
-                grid-template-columns: 1fr 1fr;
-            }
-        }
-
-        .card, .card-soft {
-            border-radius: 14px;
-            padding: 14px 14px 16px;
-            border: 1px solid rgba(148, 163, 184, 0.15);
-        }
-
         .card {
-            background: linear-gradient(135deg, rgba(15,23,42,0.94), rgba(15,23,42,0.98));
-            box-shadow: 0 18px 45px rgba(15,23,42,0.75);
+            background:linear-gradient(135deg,rgba(15,23,42,0.94),rgba(15,23,42,0.98));
+            box-shadow:0 18px 45px rgba(15,23,42,0.75);
         }
-
         .card-soft {
-            background: radial-gradient(circle at top left, #111827, #020617);
-            border-color: rgba(55, 65, 81, 0.7);
+            background:radial-gradient(circle at top left,#111827,#020617);
+            border-color:rgba(55,65,81,0.7);
         }
-
-        .card h2, .card-soft h2 {
-            font-size: 1.1rem;
-            margin: 0 0 10px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
+        .card h2,.card-soft h2 {
+            font-size:1.1rem; margin:0 0 10px; display:flex; align-items:center; gap:6px;
         }
-
-        .card h2 span.dot, .card-soft h2 span.dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 999px;
-            background: var(--accent);
-            box-shadow: 0 0 8px rgba(56,189,248,0.9);
+        .card h2 span.dot,.card-soft h2 span.dot {
+            width:8px; height:8px; border-radius:999px;
+            background:var(--accent); box-shadow:0 0 8px rgba(56,189,248,0.9);
         }
-
         .error {
-            border-color: rgba(248, 113, 113, 0.7);
-            background: linear-gradient(135deg, rgba(127,29,29,0.9), rgba(15,23,42,0.96));
+            border-color:rgba(248,113,113,0.7);
+            background:linear-gradient(135deg,rgba(127,29,29,0.9),rgba(15,23,42,0.96));
         }
-
-        .label { font-weight: 600; font-size: 0.9rem; }
-        p { margin: 4px 0 6px; font-size: 0.9rem; }
-
-        .muted { color: var(--muted); }
+        .label { font-weight:600; font-size:0.9rem; }
+        p { margin:4px 0 6px; font-size:0.9rem; }
+        .muted { color:var(--muted); }
 
         .badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 3px 10px;
-            border-radius: 999px;
-            font-size: 0.8rem;
-            font-weight: 600;
-            letter-spacing: 0.02em;
+            display:inline-flex; align-items:center; gap:6px;
+            padding:4px 12px; border-radius:999px;
+            font-size:0.9rem; font-weight:700; letter-spacing:0.03em;
+            text-transform:uppercase;
         }
         .badge-up {
-            background: rgba(34,197,94,0.12);
-            color: #bbf7d0;
-            border: 1px solid rgba(34,197,94,0.6);
+            background:rgba(34,197,94,0.16);
+            color:#bbf7d0;
+            border:1px solid rgba(34,197,94,0.7);
         }
         .badge-down {
-            background: rgba(248,113,113,0.16);
-            color: #fecaca;
-            border: 1px solid rgba(248,113,113,0.7);
+            background:rgba(248,113,113,0.2);
+            color:#fecaca;
+            border:1px solid rgba(248,113,113,0.8);
         }
         .badge-flat {
-            background: rgba(148,163,184,0.18);
-            color: #e5e7eb;
-            border: 1px solid rgba(148,163,184,0.7);
+            background:rgba(148,163,184,0.2);
+            color:#e5e7eb;
+            border:1px solid rgba(148,163,184,0.8);
         }
-
         .pill {
-            display: inline-block;
-            font-size: 0.78rem;
-            padding: 2px 7px;
-            border-radius: 999px;
-            background: rgba(148,163,184,0.2);
-            color: var(--muted);
+            display:inline-block; font-size:0.78rem; padding:2px 7px; border-radius:999px;
+            background:rgba(148,163,184,0.2); color:var(--muted);
         }
+        .pill-risk { background:rgba(234,179,8,0.18); color:var(--yellow); }
+        .big-number { font-size:1.8rem; font-weight:700; }
 
-        .pill-risk {
-            background: rgba(234,179,8,0.18);
-            color: var(--yellow);
+        .grid { display:grid; grid-template-columns:1fr; gap:16px; }
+        @media (min-width:880px){
+            .grid-2-even { grid-template-columns:1fr 1fr; }
         }
 
         table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.85rem;
-            margin-top: 4px;
+            width:100%; border-collapse:collapse; font-size:0.85rem; margin-top:4px;
         }
-
-        th, td {
-            border-bottom: 1px solid rgba(31, 41, 55, 0.9);
-            padding: 6px 6px;
-            text-align: left;
+        th,td {
+            border-bottom:1px solid rgba(31,41,55,0.9);
+            padding:6px 6px; text-align:left;
         }
-
-        th {
-            font-weight: 600;
-            color: var(--muted);
-            font-size: 0.8rem;
-        }
-
-        tr:last-child td { border-bottom: none; }
+        th { font-weight:600; color:var(--muted); font-size:0.8rem; }
+        tr:last-child td { border-bottom:none; }
 
         input {
-            width: 100%;
-            padding: 7px 9px;
-            margin: 3px 0 6px;
-            border-radius: 8px;
-            border: 1px solid rgba(55, 65, 81, 0.9);
-            background: linear-gradient(135deg, #020617, #020617);
-            color: var(--text);
-            font-size: 0.9rem;
+            width:100%; padding:7px 9px; margin:3px 0 6px;
+            border-radius:8px;
+            border:1px solid rgba(55,65,81,0.9);
+            background:linear-gradient(135deg,#020617,#020617);
+            color:var(--text); font-size:0.9rem;
         }
-
         input:focus {
-            outline: 1px solid var(--accent);
-            border-color: var(--accent);
-            box-shadow: 0 0 0 1px rgba(56,189,248,0.6);
+            outline:1px solid var(--accent);
+            border-color:var(--accent);
+            box-shadow:0 0 0 1px rgba(56,189,248,0.6);
         }
-
         button {
-            padding: 7px 14px;
-            margin-top: 6px;
-            border-radius: 999px;
-            border: none;
-            background: linear-gradient(135deg, #38bdf8, #22c55e);
-            color: #0b1120;
-            font-weight: 600;
-            font-size: 0.9rem;
-            cursor: pointer;
-            box-shadow: 0 10px 22px rgba(56,189,248,0.35);
+            padding:7px 14px; margin-top:6px;
+            border-radius:999px; border:none;
+            background:linear-gradient(135deg,#38bdf8,#22c55e);
+            color:#0b1120; font-weight:600; font-size:0.9rem;
+            cursor:pointer; box-shadow:0 10px 22px rgba(56,189,248,0.35);
         }
+        button:hover { filter:brightness(1.05); }
 
-        button:hover { filter: brightness(1.05); }
-
-        ul.small { padding-left: 18px; }
-
-        .small { font-size: 0.8rem; color: var(--muted); }
-
-        .metric-row {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px 18px;
-            font-size: 0.86rem;
-        }
-        .metric-row span.value {
-            color: var(--accent);
-            font-weight: 600;
-        }
+        ul.small { padding-left:18px; }
+        .small { font-size:0.8rem; color:var(--muted); }
 
         .split-line {
-            height: 1px;
-            background: linear-gradient(to right, transparent, rgba(148,163,184,0.5), transparent);
-            margin: 6px 0 8px;
+            height:1px;
+            background:linear-gradient(to right,transparent,rgba(148,163,184,0.5),transparent);
+            margin:8px 0 10px;
         }
-
-        .mode-pill {
-            font-size: 0.75rem;
-            padding: 2px 8px;
-            border-radius: 999px;
-            background: rgba(148,163,184,0.16);
-            color: var(--muted);
-            border: 1px solid rgba(148,163,184,0.5);
-        }
-
-        .checkbox-row {
-            margin-top: 6px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-        .checkbox-row input[type="checkbox"] {
-            width: auto;
-        }
+        .weekly-bias-up { color:var(--green); font-weight:600; }
+        .weekly-bias-down { color:var(--red); font-weight:600; }
+        .weekly-bias-choppy { color:var(--muted); font-weight:600; }
     </style>
 </head>
 <body>
@@ -268,19 +149,17 @@
     <header>
         <div class="title-block">
             <h1>
-                NatGas Trend Bot
-                <span class="title-pill">Tech + Weather + Cross-market</span>
+                NatGas Weekly Trend Bot
+                <span class="title-pill">Trend signal + week outlook</span>
             </h1>
             <div class="title-sub">
-                Live directional bias (BUY/SELL/NO TRADE) using NatGas price history,
-                crude oil linkage, and US + Europe weather.
+                Main focus: BUY / SELL / NO TRADE signal, plus a projected bias for the rest of the trading week.
             </div>
         </div>
         <div class="timestamp">
             {% if timestamp %}
-                <div>Market data: <span>{{ timestamp }}</span> UTC</div>
+                <div>Last market update: <span>{{ timestamp }}</span> UTC</div>
             {% endif %}
-            <div class="mode-pill">{{ mode_label }}</div>
         </div>
     </header>
 
@@ -291,225 +170,158 @@
         </div>
     {% endif %}
 
-    {% if weather_error %}
-        <div class="card error">
-            <h2><span class="dot"></span> Weather data warning</h2>
-            <p>{{ weather_error }}</p>
-        </div>
-    {% endif %}
+    <!-- MAIN SIGNAL -->
+    <div class="card">
+        <h2><span class="dot"></span> Main trend signal</h2>
 
-    <div class="grid grid-2">
-        <div class="card">
-            <h2><span class="dot"></span> Market snapshot</h2>
+        {% if signal %}
+            <p>
+                {% if signal.direction == "UP" %}
+                    <span class="badge badge-up">BUY / LONG BIAS</span>
+                {% elif signal.direction == "DOWN" %}
+                    <span class="badge badge-down">SELL / SHORT BIAS</span>
+                {% else %}
+                    <span class="badge badge-flat">NO CLEAR EDGE / NO TRADE</span>
+                {% endif %}
+                <span class="pill pill-risk">Not financial advice</span>
+            </p>
+
+            <p>
+                <span class="label">Confidence now:</span>
+                <span class="big-number">{{ (signal.confidence * 100) | round(1) }}%</span>
+            </p>
+
             {% if last_price %}
-                <div class="metric-row">
-                    <span class="label">NatGas:</span>
-                    <span class="value">{{ last_price | round(4) }}</span>
-                    {% if feats %}
-                        <span class="label">Crude Oil:</span>
-                        <span class="value">{{ feats.cl_price | round(4) }}</span>
-                    {% endif %}
-                </div>
-            {% else %}
-                <p>No NatGas price available right now.</p>
-            {% endif %}
-
-            {% if feats %}
-                <div class="split-line"></div>
                 <p>
-                    <span class="label">NG / CL ratio z-score:</span>
-                    <span class="value">{{ feats.ng_cl_ratio_z | round(2) }}</span>
-                    <span class="small">
-                        {% if feats.ng_cl_ratio_z > 1 %}
-                            (NatGas expensive vs oil)
-                        {% elif feats.ng_cl_ratio_z < -1 %}
-                            (NatGas cheap vs oil)
-                        {% else %}
-                            (Near normal vs oil)
-                        {% endif %}
+                    <span class="label">NatGas last price:</span>
+                    <span style="color:var(--accent); font-weight:600;">
+                        {{ last_price | round(4) }}
                     </span>
                 </p>
-
-                {% if cl_impact %}
-                    <p>
-                        <span class="label">Crude trend (3 days):</span>
-                        {{ cl_impact.trend_label }}
-                        ({{ cl_impact.cl_ret_3d_pct | round(2) }}%)
-                    </p>
-                    <p class="small">
-                        {{ cl_impact.impact_text }}
-                    </p>
-                {% endif %}
             {% endif %}
-        </div>
 
-        <div class="card">
-            <h2><span class="dot"></span> Trade signal</h2>
-            {% if signal %}
-                <p>
-                    <span class="label">Direction:</span>
-                    {% if signal.direction == "UP" %}
-                        <span class="badge badge-up">UP · Bullish bias</span>
-                    {% elif signal.direction == "DOWN" %}
-                        <span class="badge badge-down">DOWN · Bearish bias</span>
-                    {% else %}
-                        <span class="badge badge-flat">FLAT · No clear edge</span>
-                    {% endif %}
-                </p>
-
-                <p>
-                    <span class="label">Suggested action:</span>
-                    {% if signal.direction == "UP" %}
-                        <span style="color: var(--green); font-weight: 600;">BUY / go LONG</span>
-                    {% elif signal.direction == "DOWN" %}
-                        <span style="color: var(--red); font-weight: 600;">SELL / go SHORT</span>
-                    {% else %}
-                        <span style="color: var(--muted); font-weight: 600;">NO TRADE / stay out</span>
-                    {% endif %}
-                    <span class="pill pill-risk">Not financial advice</span>
-                </p>
-
-                <p>
-                    <span class="label">Confidence:</span>
-                    <span class="value">{{ (signal.confidence * 100) | round(1) }}%</span>
-                </p>
-
-                {% if weather_info %}
-                    <p>
-                        <span class="label">Weather impact:</span>
-                        <span class="small">{{ weather_info.impact_text }}</span>
-                    </p>
-                {% endif %}
-
-                <div class="split-line"></div>
-
-                <p>
-                    <span class="label">Stop-loss:</span> {{ signal.stop_loss | round(4) }}<br>
-                    <span class="label">Take-profit:</span> {{ signal.take_profit | round(4) }}
-                </p>
-                <p class="small">
-                    Stop distance:
-                    {{ (signal.stop_pct * 100) | round(2) }}% ·
-                    TP distance:
-                    {{ (signal.tp_pct * 100) | round(2) }}%
-                </p>
-
-                <p class="small">
-                    Signal combines: EMAs, RSI, Bollinger, ATR, MACD, NG/Oil ratio,
-                    plus US + EU weather (HDD & CDD) for the next 7 days.
-                </p>
-            {% else %}
-                <p>No signal available.</p>
+            {% if weather_info %}
+                <p class="small">{{ weather_info.impact_text }}</p>
             {% endif %}
-        </div>
+
+            {% if cl_impact %}
+                <p class="small">
+                    Crude oil: {{ cl_impact.trend_label }}
+                    ({{ cl_impact.cl_ret_3d_pct | round(2) }}% over 3 days).<br>
+                    {{ cl_impact.impact_text }}
+                </p>
+            {% endif %}
+
+            {% if lng_impact %}
+                <p class="small">
+                    LNG proxy (LNG stock): {{ lng_impact.trend_label }}
+                    {% if lng_impact.lng_ret_10d_pct is not none %}
+                        ({{ lng_impact.lng_ret_10d_pct | round(2) }}% over 10 days).
+                    {% endif %}<br>
+                    {{ lng_impact.impact_text }}
+                </p>
+            {% endif %}
+
+            <div class="split-line"></div>
+
+            <p>
+                <span class="label">Stop-loss level:</span> {{ signal.stop_loss | round(4) }}<br>
+                <span class="label">Take-profit level:</span> {{ signal.take_profit | round(4) }}
+            </p>
+            <p class="small">
+                Stop distance: {{ (signal.stop_pct * 100) | round(2) }}% ·
+                TP distance: {{ (signal.tp_pct * 100) | round(2) }}%<br>
+                Risk is sized using volatility / ATR, not a fixed number.
+            </p>
+        {% else %}
+            <p>No signal available right now.</p>
+        {% endif %}
     </div>
 
-    {% if feats %}
-        <div class="card-soft" style="margin-top: 10px;">
-            <h2><span class="dot"></span> Technical view</h2>
-            <table>
-                <tr>
-                    <th>Indicator</th>
-                    <th>Value</th>
-                    <th>Interpretation</th>
-                </tr>
-                <tr>
-                    <td>EMA 10</td>
-                    <td>{{ feats.ema_fast | round(4) }}</td>
-                    <td rowspan="3">
-                        Short = EMA10, Medium = EMA30, Long = EMA50.<br>
-                        If EMA10 &gt; EMA30 &gt; EMA50 → trending up.<br>
-                        If EMA10 &lt; EMA30 &lt; EMA50 → trending down.
-                    </td>
-                </tr>
-                <tr>
-                    <td>EMA 30</td>
-                    <td>{{ feats.ema_slow | round(4) }}</td>
-                </tr>
-                <tr>
-                    <td>EMA 50</td>
-                    <td>{{ feats.ema_long | round(4) }}</td>
-                </tr>
-                <tr>
-                    <td>RSI 14</td>
-                    <td>{{ feats.rsi | round(2) }}</td>
-                    <td>
-                        &lt; 30 = oversold, &gt; 70 = overbought.<br>
-                        Mid-range = balanced.
-                    </td>
-                </tr>
-                <tr>
-                    <td>24h volatility</td>
-                    <td>{{ (feats.vol_24h * 100) | round(2) }}%</td>
-                    <td>Average percentage move over the last 24 hours.</td>
-                </tr>
-                <tr>
-                    <td>ATR 14</td>
-                    <td>
-                        {{ feats.atr_14 | round(4) }}
-                        ({{ ((feats.atr_14 / (last_price or 1)) * 100) | round(2) }}%)
-                    </td>
-                    <td>Average True Range; used for dynamic stop sizing.</td>
-                </tr>
-                <tr>
-                    <td>Bollinger position</td>
-                    <td>{{ (feats.bb_pos * 100) | round(1) }}%</td>
-                    <td>
-                        ~0% = near lower band (cheap), ~100% = near upper band (expensive).
-                    </td>
-                </tr>
-                <tr>
-                    <td>MACD line</td>
-                    <td>{{ feats.macd_line | round(4) }}</td>
-                    <td rowspan="2">
-                        MACD &gt; 0 with positive histogram = bullish momentum.<br>
-                        MACD &lt; 0 with negative histogram = bearish momentum.
-                    </td>
-                </tr>
-                <tr>
-                    <td>MACD histogram</td>
-                    <td>{{ feats.macd_hist | round(4) }}</td>
-                </tr>
-            </table>
-        </div>
-    {% endif %}
+    <!-- WEEKLY OUTLOOK -->
+    <div class="card-soft" style="margin-top:12px;">
+        <h2><span class="dot"></span> Weekly outlook (projection)</h2>
 
-    {% if weather_info %}
-        <div class="card-soft">
-            <h2><span class="dot"></span> Weather (US + Europe, next 7 days)</h2>
+        {% if weekly_outlook and signal %}
+            <p class="small">
+                Outlook is based on current trend, volatility, NatGas vs oil, weather and LNG proxy.
+                Confidence fades further into the week.
+            </p>
             <table>
                 <tr>
-                    <th>Region</th>
-                    <th>Current °C</th>
-                    <th>HDD 7d</th>
-                    <th>CDD 7d</th>
+                    <th>Period</th>
+                    <th>Bias</th>
+                    <th>Conf.</th>
+                    <th>Comment</th>
                 </tr>
-                {% for loc in weather_info.locations %}
+                {% for day in weekly_outlook %}
                     <tr>
-                        <td>{{ loc.name }}</td>
+                        <td>{{ day.label }}</td>
                         <td>
-                            {% if loc.temp is not none %}
-                                {{ loc.temp | round(1) }}
+                            {% if day.bias == "UP" %}
+                                <span class="weekly-bias-up">UP / Bullish</span>
+                            {% elif day.bias == "DOWN" %}
+                                <span class="weekly-bias-down">DOWN / Bearish</span>
                             {% else %}
-                                ?
+                                <span class="weekly-bias-choppy">CHOPPY / RANGE</span>
                             {% endif %}
                         </td>
-                        <td>{{ loc.hdd7 | round(1) }}</td>
-                        <td>{{ loc.cdd7 | round(1) }}</td>
+                        <td>{{ (day.confidence * 100) | round(1) }}%</td>
+                        <td class="small">{{ day.note }}</td>
                     </tr>
                 {% endfor %}
             </table>
             <p class="small">
-                HDD (Heating Degree Days) ↑ = colder vs 18°C → higher heating demand.<br>
-                CDD (Cooling Degree Days) ↑ = hotter vs 18°C → higher cooling / power demand.<br>
-                These feed into the confidence of BUY/SELL.
+                This is a projection, not a guarantee. Unexpected news can break the pattern at any time,
+                especially in NatGas.
             </p>
-        </div>
-    {% endif %}
+        {% else %}
+            <p>No weekly outlook available.</p>
+        {% endif %}
+    </div>
 
-    <div class="grid grid-2-even">
-        <div class="card">
-            <h2><span class="dot"></span> Position size & data mode</h2>
+    <!-- BOTTOM GRID -->
+    <div class="grid grid-2-even" style="margin-top:14px;">
+        <div class="card-soft">
+            <h2><span class="dot"></span> Market snapshot & tech</h2>
+            {% if feats %}
+                <p>
+                    <span class="label">EMAs (short / mid / long):</span><br>
+                    EMA 10: {{ feats.ema_fast | round(4) }}<br>
+                    EMA 30: {{ feats.ema_slow | round(4) }}<br>
+                    EMA 50: {{ feats.ema_long | round(4) }}
+                </p>
+                <p>
+                    <span class="label">RSI 14:</span> {{ feats.rsi | round(2) }}<br>
+                    <span class="label">24h volatility:</span> {{ (feats.vol_24h * 100) | round(2) }}%<br>
+                    <span class="label">ATR 14:</span> {{ feats.atr_14 | round(4) }}
+                    ({{ ((feats.atr_14 / (last_price or 1)) * 100) | round(2) }}% of price)
+                </p>
+                <p>
+                    <span class="label">Bollinger position:</span>
+                    {{ (feats.bb_pos * 100) | round(1) }}% of band range<br>
+                    <span class="label">MACD line / hist:</span>
+                    {{ feats.macd_line | round(4) }} / {{ feats.macd_hist | round(4) }}
+                </p>
+                <p>
+                    <span class="label">NG / CL ratio z-score:</span>
+                    {{ feats.ng_cl_ratio_z | round(2) }}
+                    <span class="small">(how cheap / expensive NatGas is vs crude)</span>
+                </p>
+                {% if feats.lng_price %}
+                    <p>
+                        <span class="label">LNG proxy price (LNG):</span>
+                        {{ feats.lng_price | round(2) }}
+                        <span class="small">(used as export theme proxy)</span>
+                    </p>
+                {% endif %}
+            {% else %}
+                <p>No indicators available.</p>
+            {% endif %}
+        </div>
+
+        <div class="card-soft">
+            <h2><span class="dot"></span> Position size & usage</h2>
             <form method="post">
                 <label>
                     Account balance:
@@ -521,41 +333,31 @@
                     <input type="number" step="0.1" name="risk_pct"
                            value="{{ risk_pct }}">
                 </label>
-                <div class="checkbox-row small">
-                    <input type="checkbox" name="extended_mode"
-                           {% if extended_mode %}checked{% endif %}>
-                    <span>Use extended data (more history & weather, slower)</span>
-                </div>
-                <button type="submit">Recalculate &amp; refresh</button>
+                <button type="submit">Recalculate position size</button>
             </form>
 
             {% if position_size %}
                 <p style="margin-top:8px;">
                     <span class="label">Suggested position size (units):</span>
-                    <span class="value">{{ position_size | round(2) }}</span>
+                    <span style="color:var(--accent); font-weight:600;">
+                        {{ position_size | round(2) }}
+                    </span>
                 </p>
             {% endif %}
+
             <p class="small" style="margin-top:6px;">
                 Position size = (account × risk%) ÷ stop distance.<br>
-                You still choose your broker leverage, lots and margin.
+                You still choose your actual lot size / leverage on your broker.
             </p>
-            <p class="small" style="margin-top:4px;">
-                FAST mode: 60 days of data, key regions, cached for ~5 minutes.<br>
-                EXTENDED mode: 120 days + all regions (heavier).
-            </p>
-        </div>
 
-        <div class="card">
-            <h2><span class="dot"></span> How to read this</h2>
+            <p class="small" style="margin-top:6px;">
+                How to use:
+            </p>
             <ul class="small">
-                <li><b>BUY</b> = bias long NatGas (UP).</li>
-                <li><b>SELL</b> = bias short NatGas (DOWN).</li>
-                <li><b>NO TRADE</b> = edge not strong enough.</li>
-                <li>Market side: EMAs, RSI, volatility, ATR, MACD, NG vs Oil.</li>
-                <li>Crude side: 3-day trend + NG/CL ratio for cross-commodity impact.</li>
-                <li>Weather side: US + EU HDD & CDD (current & next 7 days).</li>
-                <li>Weather and crude impact are already blended into the confidence %.</li>
-                <li>Use this as a helper, not a guarantee of profit.</li>
+                <li>Use the <b>Main trend signal</b> for direction (BUY / SELL / NO TRADE).</li>
+                <li>Use the <b>Weekly outlook</b> to decide scalp vs swing.</li>
+                <li>Check weather, crude and LNG text for context.</li>
+                <li>Always combine with your own levels & risk management.</li>
             </ul>
         </div>
     </div>
