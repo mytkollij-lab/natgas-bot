@@ -1,22 +1,25 @@
 import math
 import time
+import json
+import requests
 
 import pandas as pd
-import requests
 import yfinance as yf
 from flask import Flask, render_template, request
 
 app = Flask(__name__)
 
 # ---------------------------------------------------------------------
-# SIMPLE CACHE (speed + less API calls)
+# SIMPLE CACHE (keeps the app from refetching every time = faster)
 # ---------------------------------------------------------------------
 CACHE_TTL_SECONDS = 300  # 5 minutes
 
 market_cache = {"data": None, "error": None, "timestamp": 0.0}
 weather_cache = {"info": None, "error": None, "score": 0.0, "timestamp": 0.0}
 
-# Weather regions (US + Europe)
+# ---------------------------------------------------------------------
+# WEATHER REGIONS (US + Europe)
+# ---------------------------------------------------------------------
 WEATHER_LOCATIONS = [
     {"name": "US Northeast (New York)", "lat": 40.71, "lon": -74.00},
     {"name": "US Midwest (Chicago)", "lat": 41.88, "lon": -87.63},
@@ -31,7 +34,10 @@ WEATHER_LOCATIONS = [
 # WEATHER HELPERS
 # ---------------------------------------------------------------------
 def fetch_weather_for_location(lat: float, lon: float):
-    """Use Open-Meteo free API to get next 7 days of hourly temps and compute HDD/CDD."""
+    """
+    Use Open-Meteo free API to get next 7 days of hourly temperature.
+    Returns: (current_temp, HDD_7d, CDD_7d) with base 18°C.
+    """
     base_temp = 18.0
     url = (
         "https://api.open-meteo.com/v1/forecast"
@@ -49,7 +55,6 @@ def fetch_weather_for_location(lat: float, lon: float):
     current_temp = temps[0]
     hdd = 0.0
     cdd = 0.0
-
     for t in temps:
         hdd += max(0.0, base_temp - t)
         cdd += max(0.0, t - base_temp)
@@ -58,7 +63,13 @@ def fetch_weather_for_location(lat: float, lon: float):
 
 
 def compute_weather_summary():
-    """Aggregate weather across key regions and produce a simple score."""
+    """
+    Aggregate weather across key regions.
+    Returns:
+      weather_info (dict),
+      weather_error (str or None),
+      weather_score (float in [-0.25, +0.25])
+    """
     locations_data = []
     total_hdd = 0.0
     total_cdd = 0.0
@@ -82,11 +93,12 @@ def compute_weather_summary():
     avg_hdd = total_hdd / count
     avg_cdd = total_cdd / count
 
+    # very rough “demand” score
     heating_strength = avg_hdd / 100.0
     cooling_strength = avg_cdd / 100.0
     weather_score = 0.0
 
-    # Colder / hotter → bullish NatGas
+    # colder/ hotter = bullish NatGas
     if heating_strength > 1.5:
         weather_score += 0.20
     elif heating_strength > 0.8:
@@ -97,11 +109,10 @@ def compute_weather_summary():
     elif cooling_strength > 0.8:
         weather_score += 0.07
 
-    # Very mild → bearish
+    # both mild = slightly bearish
     if heating_strength < 0.4 and cooling_strength < 0.4:
         weather_score -= 0.15
 
-    # Clamp
     weather_score = max(min(weather_score, 0.25), -0.25)
 
     if weather_score > 0.15:
@@ -142,7 +153,7 @@ def get_weather_summary_cached():
 
 
 # ---------------------------------------------------------------------
-# TECHNICAL INDICATORS
+# SIMPLE INDICATORS
 # ---------------------------------------------------------------------
 def ema(series: pd.Series, window: int) -> pd.Series:
     return series.ewm(span=window, adjust=False).mean()
@@ -152,10 +163,8 @@ def rsi(series: pd.Series, window: int = 14) -> pd.Series:
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
-
     avg_gain = gain.rolling(window=window).mean()
     avg_loss = loss.rolling(window=window).mean()
-
     rs = avg_gain / (avg_loss + 1e-9)
     return 100 - (100 / (1 + rs))
 
@@ -187,21 +196,15 @@ def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
 
 
 # ---------------------------------------------------------------------
-# MARKET DATA (NG + CL + LNG proxy)
+# MARKET DATA + FEATURES
 # ---------------------------------------------------------------------
 def get_latest_features_fresh():
     """
-    Download about 60 days of hourly NG & CL, and 120 days of daily LNG stock.
+    Download about 60 days of hourly NG + CL data and calculate indicators.
     """
     try:
         ng = yf.download("NG=F", period="60d", interval="1h", progress=False, threads=False)
         cl = yf.download("CL=F", period="60d", interval="1h", progress=False, threads=False)
-
-        # LNG proxy: Cheniere Energy (LNG) – daily data
-        try:
-            lng = yf.download("LNG", period="120d", interval="1d", progress=False, threads=False)
-        except Exception:
-            lng = None
 
         if ng is None or ng.empty:
             return None, "No NatGas data received from Yahoo Finance."
@@ -228,10 +231,14 @@ def get_latest_features_fresh():
         df["ema_slow"] = ema(close, 30)
         df["ema_long"] = ema(close, 50)
 
-        # Vol & RSI & ATR
+        # RSI
+        df["rsi"] = rsi(close, 14)
+
+        # Volatility (24h std of 1h returns)
         df["ret_1h"] = close.pct_change(1)
         df["volatility_24h"] = df["ret_1h"].rolling(24).std()
-        df["rsi"] = rsi(close, 14)
+
+        # ATR
         df["atr_14"] = atr(high, low, close, 14)
 
         # Bollinger
@@ -254,8 +261,8 @@ def get_latest_features_fresh():
         ratio_std = ratio.rolling(50).std()
         df["ng_cl_ratio_z"] = (ratio - ratio_ma) / (ratio_std + 1e-9)
 
-        # Crude 3-day return (72 hours of 1h bars)
-        df["cl_ret_3d"] = cl_close.pct_change(72)
+        # crude 3-day return
+        df["cl_ret_3d"] = cl_close.pct_change(72)  # 72 hours ≈ 3 days
 
         df = df.dropna()
         if df.empty:
@@ -267,21 +274,6 @@ def get_latest_features_fresh():
             ts_str = ts.tz_convert("UTC").strftime("%Y-%m-%d %H:%M")
         except Exception:
             ts_str = str(ts)
-
-        # LNG proxy metrics
-        lng_price = None
-        lng_ret_10d = 0.0
-        lng_z = 0.0
-        if lng is not None and not lng.empty:
-            lng_close = lng["Close"].dropna()
-            if not lng_close.empty:
-                lng_price = float(lng_close.iloc[-1])
-                if len(lng_close) > 10:
-                    lng_ret_10d = (lng_close.iloc[-1] / lng_close.iloc[-11]) - 1.0
-                ma_60 = lng_close.rolling(60).mean().iloc[-1]
-                std_60 = lng_close.rolling(60).std().iloc[-1]
-                if not math.isnan(ma_60) and std_60 > 0:
-                    lng_z = (lng_close.iloc[-1] - ma_60) / (std_60 + 1e-9)
 
         feats = {
             "last_price": float(latest["ng_close"]),
@@ -298,10 +290,6 @@ def get_latest_features_fresh():
             "ng_cl_ratio_z": float(latest["ng_cl_ratio_z"]),
             "cl_ret_3d": float(latest["cl_ret_3d"]),
             "timestamp": ts_str,
-            # LNG proxy:
-            "lng_price": lng_price,
-            "lng_ret_10d": float(lng_ret_10d),
-            "lng_z": float(lng_z),
         }
         return feats, None
 
@@ -323,11 +311,11 @@ def get_latest_features_cached():
 
 
 # ---------------------------------------------------------------------
-# CRUDE IMPACT
+# CRUDE OIL IMPACT TEXT
 # ---------------------------------------------------------------------
 def compute_crude_impact(features):
-    ratio_z = float(features.get("ng_cl_ratio_z", 0.0) or 0.0)
-    cl_ret_3d = float(features.get("cl_ret_3d", 0.0) or 0.0)
+    ratio_z = features.get("ng_cl_ratio_z", 0.0)
+    cl_ret_3d = features.get("cl_ret_3d", 0.0)
     cl_ret_pct = cl_ret_3d * 100.0
 
     if cl_ret_3d > 0.05:
@@ -364,78 +352,20 @@ def compute_crude_impact(features):
 
 
 # ---------------------------------------------------------------------
-# LNG IMPACT (using LNG stock as proxy)
+# SIGNAL LOGIC (BUY / SELL / FLAT)
 # ---------------------------------------------------------------------
-def compute_lng_impact(features):
-    lng_price = features.get("lng_price")
-    lng_ret_10d = float(features.get("lng_ret_10d", 0.0) or 0.0)
-    lng_z = float(features.get("lng_z", 0.0) or 0.0)
-
-    if lng_price is None:
-        return {
-            "lng_ret_10d_pct": None,
-            "trend_label": "no data",
-            "impact_text": "No LNG proxy data available.",
-            "score": 0.0,
-        }
-
-    lng_ret_pct = lng_ret_10d * 100.0
-
-    if lng_ret_10d > 0.15:
-        trend_label = "strong uptrend"
-    elif lng_ret_10d > 0.05:
-        trend_label = "mild uptrend"
-    elif lng_ret_10d < -0.15:
-        trend_label = "strong downtrend"
-    elif lng_ret_10d < -0.05:
-        trend_label = "mild downtrend"
-    else:
-        trend_label = "sideways / range-bound"
-
-    score = 0.0
-    if "uptrend" in trend_label:
-        score += 0.08
-    elif "downtrend" in trend_label:
-        score -= 0.08
-
-    score += max(min(lng_z * 0.03, 0.07), -0.07)
-    score = max(min(score, 0.12), -0.12)
-
-    if score > 0.08:
-        impact_text = "LNG proxy is very strong → export theme supportive for NatGas."
-    elif score > 0.03:
-        impact_text = "LNG proxy is somewhat strong → mild bullish influence."
-    elif score < -0.08:
-        impact_text = "LNG proxy is very weak → export theme not supportive (bearish tilt)."
-    elif score < -0.03:
-        impact_text = "LNG proxy is somewhat weak → mild bearish influence."
-    else:
-        impact_text = "LNG proxy looks neutral to slightly mixed."
-
-    return {
-        "lng_ret_10d_pct": lng_ret_pct,
-        "trend_label": trend_label,
-        "impact_text": impact_text,
-        "score": score,
-    }
-
-
-# ---------------------------------------------------------------------
-# SIGNAL (BUY / SELL / FLAT)
-# ---------------------------------------------------------------------
-def make_signal(features, weather_score: float = 0.0, lng_score: float = 0.0):
-    # Safely pull numeric values
-    last_price = float(features.get("last_price", 0.0) or 0.0)
-    ema_fast_val = float(features.get("ema_fast", 0.0) or 0.0)
-    ema_slow_val = float(features.get("ema_slow", 0.0) or 0.0)
-    ema_long_val = float(features.get("ema_long", 0.0) or 0.0)
-    rsi_val = float(features.get("rsi", 0.0) or 0.0)
-    vol_24h = features.get("vol_24h", None)
-    atr_14 = features.get("atr_14", None)
-    bb_pos = float(features.get("bb_pos", 0.5) or 0.5)
-    macd_line = float(features.get("macd_line", 0.0) or 0.0)
-    macd_hist = float(features.get("macd_hist", 0.0) or 0.0)
-    ratio_z = float(features.get("ng_cl_ratio_z", 0.0) or 0.0)
+def make_signal(features, weather_score: float = 0.0):
+    last_price = features["last_price"]
+    ema_fast_val = features["ema_fast"]
+    ema_slow_val = features["ema_slow"]
+    ema_long_val = features["ema_long"]
+    rsi_val = features["rsi"]
+    vol_24h = features["vol_24h"]
+    atr_14 = features["atr_14"]
+    bb_pos = features["bb_pos"]
+    macd_line = features["macd_line"]
+    macd_hist = features["macd_hist"]
+    ratio_z = features["ng_cl_ratio_z"]
 
     strong_up_trend = ema_fast_val > ema_slow_val > ema_long_val and macd_line > 0
     strong_down_trend = ema_fast_val < ema_slow_val < ema_long_val and macd_line < 0
@@ -459,25 +389,24 @@ def make_signal(features, weather_score: float = 0.0, lng_score: float = 0.0):
         direction = "FLAT"
         base_conf = 0.5
 
-    # --- Stop / TP distances (safe checks, no Series truth) ---
-    stop_pct = 0.01
-
-    if isinstance(atr_14, (int, float)) and not math.isnan(atr_14) and atr_14 > 0:
+    # stop distance based on ATR/vol
+    if atr_14 and not math.isnan(atr_14) and atr_14 > 0:
         atr_pct = atr_14 / (last_price + 1e-9)
         stop_pct = min(max(atr_pct * 1.5, 0.0075), 0.04)
-    elif isinstance(vol_24h, (int, float)) and not math.isnan(vol_24h) and vol_24h > 0:
+    elif vol_24h and not math.isnan(vol_24h) and vol_24h > 0:
         stop_pct = min(max(vol_24h * 2.0, 0.005), 0.03)
+    else:
+        stop_pct = 0.01
 
     tp_pct = stop_pct * 2.5
 
-    # --- Confidence adjustments ---
     trend_strength = abs(ema_fast_val - ema_long_val) / (last_price + 1e-9)
     conf_adj_trend = min(trend_strength * 0.8, 0.2)
     ratio_penalty = min(abs(ratio_z) * 0.05, 0.15)
 
     confidence = base_conf + conf_adj_trend - ratio_penalty
 
-    # Weather influence
+    # weather nudges
     if weather_score != 0.0:
         if direction == "UP":
             confidence += weather_score
@@ -486,18 +415,8 @@ def make_signal(features, weather_score: float = 0.0, lng_score: float = 0.0):
         else:
             confidence += 0.5 * weather_score
 
-    # LNG influence (smaller)
-    if lng_score != 0.0:
-        if direction == "UP":
-            confidence += 0.5 * lng_score
-        elif direction == "DOWN":
-            confidence -= 0.5 * lng_score
-        else:
-            confidence += 0.25 * lng_score
-
     confidence = float(min(max(confidence, 0.4), 0.98))
 
-    # Price levels
     if direction == "UP":
         stop_loss = last_price * (1 - stop_pct)
         take_profit = last_price * (1 + tp_pct)
@@ -516,12 +435,11 @@ def make_signal(features, weather_score: float = 0.0, lng_score: float = 0.0):
         "stop_loss": stop_loss,
         "take_profit": take_profit,
         "weather_score": weather_score,
-        "lng_score": lng_score,
     }
 
 
 # ---------------------------------------------------------------------
-# WEEKLY OUTLOOK
+# WEEKLY OUTLOOK (projection)
 # ---------------------------------------------------------------------
 def make_weekly_forecast(signal, features):
     if not signal or not features:
@@ -529,16 +447,15 @@ def make_weekly_forecast(signal, features):
 
     direction = signal["direction"]
     base_conf = signal["confidence"]
-    last_price = float(features.get("last_price", 0.0) or 0.0)
-    ema_fast_val = float(features.get("ema_fast", 0.0) or 0.0)
-    ema_long_val = float(features.get("ema_long", 0.0) or 0.0)
+    last_price = features["last_price"]
+    ema_fast_val = features["ema_fast"]
+    ema_long_val = features["ema_long"]
     vol_24h = features.get("vol_24h", 0.0)
 
     trend_strength = abs(ema_fast_val - ema_long_val) / (last_price + 1e-9)
     trend_strength_score = min(trend_strength * 100, 30)
-
     vol_score = 0.0
-    if isinstance(vol_24h, (int, float)) and not math.isnan(vol_24h):
+    if vol_24h and not math.isnan(vol_24h):
         vol_score = min(vol_24h * 1000, 30)
 
     days = ["Today / next 24h", "Day 2", "Day 3", "Day 4", "Day 5"]
@@ -600,7 +517,6 @@ def index():
     weather_info = None
     weather_error = None
     cl_impact = None
-    lng_impact = None
 
     # 1) Market data
     feats, data_error = get_latest_features_cached()
@@ -615,13 +531,10 @@ def index():
     weather_info, weather_error, ws = get_weather_summary_cached()
     weather_score = ws
 
-    # 3) Crude + LNG + signal
-    lng_score = 0.0
+    # 3) Signal & outlook
     if feats is not None and error_msg is None:
         cl_impact = compute_crude_impact(feats)
-        lng_impact = compute_lng_impact(feats)
-        lng_score = lng_impact.get("score", 0.0)
-        signal = make_signal(feats, weather_score, lng_score)
+        signal = make_signal(feats, weather_score)
         weekly_outlook = make_weekly_forecast(signal, feats)
 
     # 4) Position sizing
@@ -656,7 +569,6 @@ def index():
         weather_info=weather_info,
         weather_error=weather_error,
         cl_impact=cl_impact,
-        lng_impact=lng_impact,
     )
 
 
