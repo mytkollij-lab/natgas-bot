@@ -2,50 +2,356 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>NatGas Trend Bot</title>
+    <title>NatGas Weekly Trend Bot</title>
     <style>
-        body { background:#020617; color:#e5e7eb; font-family:system-ui; padding:20px }
-        .card { background:#0b1220; border-radius:12px; padding:16px; margin-bottom:12px }
-        .up { color:#22c55e; font-weight:700 }
-        .down { color:#ef4444; font-weight:700 }
-        .flat { color:#9ca3af; font-weight:700 }
+        :root {
+            --bg: #020617;
+            --card: #020617;
+            --card-alt: #0b1220;
+            --border: #1f2937;
+            --text: #e5e7eb;
+            --muted: #9ca3af;
+            --accent: #38bdf8;
+            --green: #22c55e;
+            --red: #ef4444;
+            --yellow: #eab308;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+            background: radial-gradient(circle at top left,#0f172a 0,#020617 45%,#000 100%);
+            color: var(--text);
+        }
+        .page { max-width: 1200px; margin: 0 auto; padding: 20px 16px 40px; }
+        header {
+            display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between;
+            gap:10px; margin-bottom:18px;
+        }
+        .title-block h1 {
+            font-size:1.9rem; margin:0; display:flex; align-items:center; gap:8px;
+        }
+        .title-pill {
+            font-size:0.8rem; padding:3px 9px; border-radius:999px;
+            background:rgba(56,189,248,0.1); color:var(--accent);
+            border:1px solid rgba(56,189,248,0.4);
+        }
+        .title-sub { margin-top:4px; font-size:0.9rem; color:var(--muted); }
+        .timestamp { font-size:0.85rem; color:var(--muted); text-align:right; }
+        .timestamp span { color:var(--accent); }
+
+        .card,.card-soft {
+            border-radius:14px; padding:14px 14px 16px;
+            border:1px solid rgba(148,163,184,0.15);
+        }
+        .card {
+            background:linear-gradient(135deg,rgba(15,23,42,0.94),rgba(15,23,42,0.98));
+            box-shadow:0 18px 45px rgba(15,23,42,0.75);
+        }
+        .card-soft {
+            background:radial-gradient(circle at top left,#111827,#020617);
+            border-color:rgba(55,65,81,0.7);
+        }
+        .card h2,.card-soft h2 {
+            font-size:1.1rem; margin:0 0 10px; display:flex; align-items:center; gap:6px;
+        }
+        .card h2 span.dot,.card-soft h2 span.dot {
+            width:8px; height:8px; border-radius:999px;
+            background:var(--accent); box-shadow:0 0 8px rgba(56,189,248,0.9);
+        }
+        .error {
+            border-color:rgba(248,113,113,0.7);
+            background:linear-gradient(135deg,rgba(127,29,29,0.9),rgba(15,23,42,0.96));
+        }
+        .label { font-weight:600; font-size:0.9rem; }
+        p { margin:4px 0 6px; font-size:0.9rem; }
+        .muted { color:var(--muted); }
+
+        .badge {
+            display:inline-flex; align-items:center; gap:6px;
+            padding:4px 12px; border-radius:999px;
+            font-size:0.9rem; font-weight:700; letter-spacing:0.03em;
+            text-transform:uppercase;
+        }
+        .badge-up {
+            background:rgba(34,197,94,0.16);
+            color:#bbf7d0;
+            border:1px solid rgba(34,197,94,0.7);
+        }
+        .badge-down {
+            background:rgba(248,113,113,0.2);
+            color:#fecaca;
+            border:1px solid rgba(248,113,113,0.8);
+        }
+        .badge-flat {
+            background:rgba(148,163,184,0.2);
+            color:#e5e7eb;
+            border:1px solid rgba(148,163,184,0.8);
+        }
+        .pill {
+            display:inline-block; font-size:0.78rem; padding:2px 7px; border-radius:999px;
+            background:rgba(148,163,184,0.2); color:var(--muted);
+        }
+        .pill-risk { background:rgba(234,179,8,0.18); color:var(--yellow); }
+        .big-number { font-size:1.8rem; font-weight:700; }
+
+        .grid { display:grid; grid-template-columns:1fr; gap:16px; }
+        @media (min-width:880px){
+            .grid-2-even { grid-template-columns:1fr 1fr; }
+        }
+
+        table {
+            width:100%; border-collapse:collapse; font-size:0.85rem; margin-top:4px;
+        }
+        th,td {
+            border-bottom:1px solid rgba(31,41,55,0.9);
+            padding:6px 6px; text-align:left;
+        }
+        th { font-weight:600; color:var(--muted); font-size:0.8rem; }
+        tr:last-child td { border-bottom:none; }
+
+        input {
+            width:100%; padding:7px 9px; margin:3px 0 6px;
+            border-radius:8px;
+            border:1px solid rgba(55,65,81,0.9);
+            background:linear-gradient(135deg,#020617,#020617);
+            color:var(--text); font-size:0.9rem;
+        }
+        input:focus {
+            outline:1px solid var(--accent);
+            border-color:var(--accent);
+            box-shadow:0 0 0 1px rgba(56,189,248,0.6);
+        }
+        button {
+            padding:7px 14px; margin-top:6px;
+            border-radius:999px; border:none;
+            background:linear-gradient(135deg,#38bdf8,#22c55e);
+            color:#0b1120; font-weight:600; font-size:0.9rem;
+            cursor:pointer; box-shadow:0 10px 22px rgba(56,189,248,0.35);
+        }
+        button:hover { filter:brightness(1.05); }
+
+        ul.small { padding-left:18px; }
+        .small { font-size:0.8rem; color:var(--muted); }
+
+        .split-line {
+            height:1px;
+            background:linear-gradient(to right,transparent,rgba(148,163,184,0.5),transparent);
+            margin:8px 0 10px;
+        }
+        .weekly-bias-up { color:var(--green); font-weight:600; }
+        .weekly-bias-down { color:var(--red); font-weight:600; }
+        .weekly-bias-choppy { color:var(--muted); font-weight:600; }
     </style>
 </head>
 <body>
+<div class="page">
+    <header>
+        <div class="title-block">
+            <h1>
+                NatGas Weekly Trend Bot
+                <span class="title-pill">Trend signal + week outlook</span>
+            </h1>
+            <div class="title-sub">
+                Main focus: BUY / SELL / NO TRADE signal, with a projected bias for the rest of the trading week.
+            </div>
+        </div>
+        <div class="timestamp">
+            {% if timestamp %}
+                <div>Last market update: <span>{{ timestamp }}</span> UTC</div>
+            {% endif %}
+        </div>
+    </header>
 
-<h1>NatGas Trend Bot</h1>
+    {% if error_msg %}
+        <div class="card error">
+            <h2><span class="dot"></span> Market data error</h2>
+            <p>{{ error_msg }}</p>
+        </div>
+    {% endif %}
 
-<div class="card">
-    <h2>Main Signal</h2>
-    {% if signal %}
-        {% if signal.direction == "UP" %}
-            <div class="up">BUY / LONG</div>
-        {% elif signal.direction == "DOWN" %}
-            <div class="down">SELL / SHORT</div>
+    <!-- MAIN SIGNAL -->
+    <div class="card">
+        <h2><span class="dot"></span> Main trend signal</h2>
+
+        {% if signal %}
+            <p>
+                {% if signal.direction == "UP" %}
+                    <span class="badge badge-up">BUY / LONG BIAS</span>
+                {% elif signal.direction == "DOWN" %}
+                    <span class="badge badge-down">SELL / SHORT BIAS</span>
+                {% else %}
+                    <span class="badge badge-flat">NO CLEAR EDGE / NO TRADE</span>
+                {% endif %}
+                <span class="pill pill-risk">Not financial advice</span>
+            </p>
+
+            <p>
+                <span class="label">Confidence now:</span>
+                <span class="big-number">{{ (signal.confidence * 100) | round(1) }}%</span>
+            </p>
+
+            {% if last_price %}
+                <p>
+                    <span class="label">NatGas last price:</span>
+                    <span style="color:var(--accent); font-weight:600;">
+                        {{ last_price | round(4) }}
+                    </span>
+                </p>
+            {% endif %}
+
+            {% if weather_info %}
+                <p class="small">{{ weather_info.impact_text }}</p>
+            {% endif %}
+
+            {% if lng_info %}
+                <p class="small">
+                    <b>LNG:</b> {{ lng_info.vessels }} vessels / {{ lng_info.capacity_bcf | round(0) }} Bcf weekly capacity.
+                    <br>{{ lng_info.impact_text }}
+                </p>
+            {% elif lng_error %}
+                <p class="small muted"><b>LNG:</b> {{ lng_error }}</p>
+            {% endif %}
+
+            {% if cl_impact %}
+                <p class="small">
+                    Crude oil: {{ cl_impact.trend_label }}
+                    ({{ cl_impact.cl_ret_3d_pct | round(2) }}% over 3 days).<br>
+                    {{ cl_impact.impact_text }}
+                </p>
+            {% endif %}
+
+            <div class="split-line"></div>
+
+            <p>
+                <span class="label">Stop-loss level:</span> {{ signal.stop_loss | round(4) }}<br>
+                <span class="label">Take-profit level:</span> {{ signal.take_profit | round(4) }}
+            </p>
+            <p class="small">
+                Stop distance: {{ (signal.stop_pct * 100) | round(2) }}% ·
+                TP distance: {{ (signal.tp_pct * 100) | round(2) }}%<br>
+                Risk is sized using volatility / ATR, not a fixed number.
+            </p>
         {% else %}
-            <div class="flat">NO TRADE</div>
+            <p>No signal available right now.</p>
         {% endif %}
-        <p>Confidence: {{ (signal.confidence * 100) | round(1) }}%</p>
-    {% endif %}
-</div>
+    </div>
 
-<div class="card">
-    <h2>LNG (US – Weekly)</h2>
-    {% if lng %}
-        <p>Latest: {{ lng.latest }} Bcf</p>
-        <p>Change vs last week: {{ lng.delta | round(2) }}</p>
-        <p>{{ lng.impact_text }}</p>
-    {% endif %}
-</div>
+    <!-- WEEKLY OUTLOOK -->
+    <div class="card-soft" style="margin-top:12px;">
+        <h2><span class="dot"></span> Weekly outlook (projection)</h2>
 
-<div class="card">
-    <h2>Weather</h2>
-    {% if weather %}
-        <p>Avg HDD: {{ weather.avg_hdd | round(1) }}</p>
-        <p>Avg CDD: {{ weather.avg_cdd | round(1) }}</p>
-        <p>{{ weather.impact_text }}</p>
-    {% endif %}
-</div>
+        {% if weekly_outlook and signal %}
+            <p class="small">
+                Outlook is based on current trend, volatility, NatGas vs oil, weather and LNG export strength.
+                Confidence fades further into the week.
+            </p>
+            <table>
+                <tr>
+                    <th>Period</th>
+                    <th>Bias</th>
+                    <th>Conf.</th>
+                    <th>Comment</th>
+                </tr>
+                {% for day in weekly_outlook %}
+                    <tr>
+                        <td>{{ day.label }}</td>
+                        <td>
+                            {% if day.bias == "UP" %}
+                                <span class="weekly-bias-up">UP / Bullish</span>
+                            {% elif day.bias == "DOWN" %}
+                                <span class="weekly-bias-down">DOWN / Bearish</span>
+                            {% else %}
+                                <span class="weekly-bias-choppy">CHOPPY / RANGE</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ (day.confidence * 100) | round(1) }}%</td>
+                        <td class="small">{{ day.note }}</td>
+                    </tr>
+                {% endfor %}
+            </table>
+            <p class="small">
+                This is a projection, not a guarantee. Unexpected news can break the pattern at any time,
+                especially in NatGas.
+            </p>
+        {% else %}
+            <p>No weekly outlook available.</p>
+        {% endif %}
+    </div>
 
+    <!-- BOTTOM GRID -->
+    <div class="grid grid-2-even" style="margin-top:14px;">
+        <div class="card-soft">
+            <h2><span class="dot"></span> Market snapshot & tech</h2>
+            {% if feats %}
+                <p>
+                    <span class="label">EMAs (short / mid / long):</span><br>
+                    EMA 10: {{ feats.ema_fast | round(4) }}<br>
+                    EMA 30: {{ feats.ema_slow | round(4) }}<br>
+                    EMA 50: {{ feats.ema_long | round(4) }}
+                </p>
+                <p>
+                    <span class="label">RSI 14:</span> {{ feats.rsi | round(2) }}<br>
+                    <span class="label">24h volatility:</span> {{ (feats.vol_24h * 100) | round(2) }}%<br>
+                    <span class="label">ATR 14:</span> {{ feats.atr_14 | round(4) }}
+                    ({{ ((feats.atr_14 / (last_price or 1)) * 100) | round(2) }}% of price)
+                </p>
+                <p>
+                    <span class="label">Bollinger position:</span>
+                    {{ (feats.bb_pos * 100) | round(1) }}% of band range<br>
+                    <span class="label">MACD line / hist:</span>
+                    {{ feats.macd_line | round(4) }} / {{ feats.macd_hist | round(4) }}
+                </p>
+                <p>
+                    <span class="label">NG / CL ratio z-score:</span>
+                    {{ feats.ng_cl_ratio_z | round(2) }}
+                    <span class="small">(how cheap / expensive NatGas is vs crude over recent history)</span>
+                </p>
+            {% else %}
+                <p>No indicators available.</p>
+            {% endif %}
+        </div>
+
+        <div class="card-soft">
+            <h2><span class="dot"></span> Position size & usage</h2>
+            <form method="post">
+                <label>
+                    Account balance:
+                    <input type="number" step="0.01" name="account_balance"
+                           value="{{ account_balance if account_balance is not none else '' }}">
+                </label>
+                <label>
+                    Risk per trade (%):
+                    <input type="number" step="0.1" name="risk_pct"
+                           value="{{ risk_pct }}">
+                </label>
+                <button type="submit">Recalculate position size</button>
+            </form>
+
+            {% if position_size %}
+                <p style="margin-top:8px;">
+                    <span class="label">Suggested position size (units):</span>
+                    <span style="color:var(--accent); font-weight:600;">
+                        {{ position_size | round(2) }}
+                    </span>
+                </p>
+            {% endif %}
+
+            <p class="small" style="margin-top:6px;">
+                Position size = (account × risk%) ÷ stop distance.<br>
+                You still choose your actual lot size / leverage on Trading212 or any broker.
+            </p>
+
+            <p class="small" style="margin-top:6px;">
+                How to use:
+            </p>
+            <ul class="small">
+                <li>Use the <b>Main trend signal</b> for direction (BUY / SELL / NO TRADE).</li>
+                <li>Use the <b>Weekly outlook</b> to decide scalp vs swing.</li>
+                <li>Combine with your own levels & risk management. This is a helper, not guaranteed profit.</li>
+            </ul>
+        </div>
+    </div>
+</div>
 </body>
 </html>
