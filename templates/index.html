@@ -1,6 +1,5 @@
 <!DOCTYPE html>
 <html>
-
 <head>
     <meta charset="UTF-8">
     <title>NatGas Weekly Trend Bot</title>
@@ -15,8 +14,6 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="NatGas Bot">
 
-    <!-- Your existing styles stay below -->
-
     <style>
         :root {
             --bg: #020617;
@@ -29,6 +26,7 @@
             --green: #22c55e;
             --red: #ef4444;
             --yellow: #eab308;
+            --orange: #fb923c;
         }
         * { box-sizing: border-box; }
         body {
@@ -107,6 +105,9 @@
             background:rgba(148,163,184,0.2); color:var(--muted);
         }
         .pill-risk { background:rgba(234,179,8,0.18); color:var(--yellow); }
+        .pill-ok { background:rgba(34,197,94,0.14); color:#bbf7d0; border:1px solid rgba(34,197,94,0.4); }
+        .pill-warn { background:rgba(251,146,60,0.14); color:#fed7aa; border:1px solid rgba(251,146,60,0.35); }
+
         .big-number { font-size:1.8rem; font-weight:700; }
 
         .grid { display:grid; grid-template-columns:1fr; gap:16px; }
@@ -115,11 +116,11 @@
         }
 
         table {
-            width:100%; border-collapse:collapse; font-size:0.85rem; margin-top:4px;
+            width:100%; border-collapse:collapse; font-size:0.85rem; margin-top:6px;
         }
         th,td {
             border-bottom:1px solid rgba(31,41,55,0.9);
-            padding:6px 6px; text-align:left;
+            padding:7px 6px; text-align:left;
         }
         th { font-weight:600; color:var(--muted); font-size:0.8rem; }
         tr:last-child td { border-bottom:none; }
@@ -146,7 +147,7 @@
         button:hover { filter:brightness(1.05); }
 
         ul.small { padding-left:18px; }
-        .small { font-size:0.8rem; color:var(--muted); }
+        .small { font-size:0.82rem; color:var(--muted); line-height:1.35; }
 
         .split-line {
             height:1px;
@@ -156,6 +157,25 @@
         .weekly-bias-up { color:var(--green); font-weight:600; }
         .weekly-bias-down { color:var(--red); font-weight:600; }
         .weekly-bias-choppy { color:var(--muted); font-weight:600; }
+
+        .hint-row {
+            display:flex; flex-wrap:wrap; gap:8px; align-items:center;
+            margin-top:6px;
+        }
+
+        details {
+            margin-top:10px;
+            border:1px solid rgba(148,163,184,0.15);
+            border-radius:12px;
+            padding:10px 12px;
+            background:rgba(2,6,23,0.35);
+        }
+        summary {
+            cursor:pointer;
+            font-weight:600;
+            color:var(--text);
+        }
+        summary::marker { color:var(--accent); }
     </style>
 </head>
 <body>
@@ -214,18 +234,6 @@
                 </p>
             {% endif %}
 
-            {% if weather_info %}
-                <p class="small">{{ weather_info.impact_text }}</p>
-            {% endif %}
-
-            {% if cl_impact %}
-                <p class="small">
-                    Crude oil: {{ cl_impact.trend_label }}
-                    ({{ cl_impact.cl_ret_3d_pct | round(2) }}% over 3 days).<br>
-                    {{ cl_impact.impact_text }}
-                </p>
-            {% endif %}
-
             <div class="split-line"></div>
 
             <p>
@@ -239,6 +247,88 @@
             </p>
         {% else %}
             <p>No signal available right now.</p>
+        {% endif %}
+    </div>
+
+    <!-- SUPPLY / DEMAND (FUNDAMENTALS) -->
+    <div class="card-soft" style="margin-top:12px;">
+        <h2><span class="dot"></span> Supply / demand view</h2>
+
+        <p class="small">
+            This section explains the “why” behind the signal (weather demand + crude context).
+            LNG / Storage / Henry Hub will show here once we connect free sources.
+        </p>
+
+        <div class="hint-row">
+            {% if weather_info %}
+                <span class="pill pill-ok">Weather included</span>
+            {% else %}
+                <span class="pill pill-warn">Weather not available</span>
+            {% endif %}
+
+            {% if cl_impact %}
+                <span class="pill pill-ok">Crude context included</span>
+            {% else %}
+                <span class="pill pill-warn">Crude context not available</span>
+            {% endif %}
+
+            <span class="pill">LNG: coming soon</span>
+            <span class="pill">EIA Storage: coming soon</span>
+            <span class="pill">Henry Hub spot: coming soon</span>
+            <span class="pill">EU storage: coming soon</span>
+        </div>
+
+        {% if weather_info %}
+            <div class="split-line"></div>
+            <p>
+                <span class="label">Demand proxy (weather):</span><br>
+                Avg HDD (7d): <span style="color:var(--accent); font-weight:600;">{{ weather_info.avg_hdd | round(1) }}</span> ·
+                Avg CDD (7d): <span style="color:var(--accent); font-weight:600;">{{ weather_info.avg_cdd | round(1) }}</span>
+            </p>
+            <p class="small">{{ weather_info.impact_text }}</p>
+
+            <details>
+                <summary>Show regional weather breakdown (US + Europe)</summary>
+                <table>
+                    <tr>
+                        <th>Region</th>
+                        <th>Now (°C)</th>
+                        <th>HDD 7d</th>
+                        <th>CDD 7d</th>
+                        <th>Meaning</th>
+                    </tr>
+                    {% for loc in weather_info.locations %}
+                        <tr>
+                            <td>{{ loc.name }}</td>
+                            <td>
+                                {% if loc.temp is not none %}
+                                    {{ loc.temp | round(1) }}
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </td>
+                            <td>{{ loc.hdd7 | round(0) }}</td>
+                            <td>{{ loc.cdd7 | round(0) }}</td>
+                            <td class="small">
+                                HDD = heating demand (cold → bullish). CDD = cooling demand (hot → bullish).
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </table>
+            </details>
+        {% else %}
+            <div class="split-line"></div>
+            <p class="small">Weather data not available right now.</p>
+        {% endif %}
+
+        {% if cl_impact %}
+            <div class="split-line"></div>
+            <p>
+                <span class="label">Crude oil context:</span><br>
+                Crude trend: <span style="color:var(--accent); font-weight:600;">{{ cl_impact.trend_label }}</span>
+                ({{ cl_impact.cl_ret_3d_pct | round(2) }}% over 3 days)
+            </p>
+            <p class="small">{{ cl_impact.impact_text }}</p>
         {% endif %}
     </div>
 
@@ -352,8 +442,8 @@
             </p>
             <ul class="small">
                 <li>Use the <b>Main trend signal</b> for direction (BUY / SELL / NO TRADE).</li>
+                <li>Use the <b>Supply / demand view</b> to understand what’s driving it.</li>
                 <li>Use the <b>Weekly outlook</b> to decide scalp vs swing.</li>
-                <li>Combine with your own levels & risk management. This is a helper, not guaranteed profit.</li>
             </ul>
         </div>
     </div>
@@ -363,13 +453,7 @@
 <script>
 if ("serviceWorker" in navigator) {
     window.addEventListener("load", function () {
-        navigator.serviceWorker.register("/static/service-worker.js")
-            .then(function (registration) {
-                console.log("ServiceWorker registered:", registration.scope);
-            })
-            .catch(function (error) {
-                console.log("ServiceWorker registration failed:", error);
-            });
+        navigator.serviceWorker.register("/static/service-worker.js").catch(() => {});
     });
 }
 </script>
