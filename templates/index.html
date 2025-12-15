@@ -153,7 +153,7 @@
                 <span class="title-pill">Trend signal + week outlook</span>
             </h1>
             <div class="title-sub">
-                Main focus: BUY / SELL / NO TRADE signal, plus a projected bias for the rest of the trading week.
+                Main focus: BUY / SELL / NO TRADE signal, with a projected bias for the rest of the trading week.
             </div>
         </div>
         <div class="timestamp">
@@ -212,16 +212,6 @@
                 </p>
             {% endif %}
 
-            {% if lng_impact %}
-                <p class="small">
-                    LNG proxy (LNG stock): {{ lng_impact.trend_label }}
-                    {% if lng_impact.lng_ret_10d_pct is not none %}
-                        ({{ lng_impact.lng_ret_10d_pct | round(2) }}% over 10 days).
-                    {% endif %}<br>
-                    {{ lng_impact.impact_text }}
-                </p>
-            {% endif %}
-
             <div class="split-line"></div>
 
             <p>
@@ -244,7 +234,7 @@
 
         {% if weekly_outlook and signal %}
             <p class="small">
-                Outlook is based on current trend, volatility, NatGas vs oil, weather and LNG proxy.
+                Outlook is based on current trend, volatility, NatGas vs oil and weather.
                 Confidence fades further into the week.
             </p>
             <table>
@@ -306,15 +296,8 @@
                 <p>
                     <span class="label">NG / CL ratio z-score:</span>
                     {{ feats.ng_cl_ratio_z | round(2) }}
-                    <span class="small">(how cheap / expensive NatGas is vs crude)</span>
+                    <span class="small">(how cheap / expensive NatGas is vs crude over recent history)</span>
                 </p>
-                {% if feats.lng_price %}
-                    <p>
-                        <span class="label">LNG proxy price (LNG):</span>
-                        {{ feats.lng_price | round(2) }}
-                        <span class="small">(used as export theme proxy)</span>
-                    </p>
-                {% endif %}
             {% else %}
                 <p>No indicators available.</p>
             {% endif %}
@@ -347,7 +330,7 @@
 
             <p class="small" style="margin-top:6px;">
                 Position size = (account × risk%) ÷ stop distance.<br>
-                You still choose your actual lot size / leverage on your broker.
+                You still choose your actual lot size / leverage on Trading212 or any broker.
             </p>
 
             <p class="small" style="margin-top:6px;">
@@ -356,8 +339,7 @@
             <ul class="small">
                 <li>Use the <b>Main trend signal</b> for direction (BUY / SELL / NO TRADE).</li>
                 <li>Use the <b>Weekly outlook</b> to decide scalp vs swing.</li>
-                <li>Check weather, crude and LNG text for context.</li>
-                <li>Always combine with your own levels & risk management.</li>
+                <li>Combine with your own levels & risk management. This is a helper, not guaranteed profit.</li>
             </ul>
         </div>
     </div>
