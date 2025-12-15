@@ -1,15 +1,21 @@
 <!DOCTYPE html>
 <html>
+
 <head>
     <meta charset="UTF-8">
     <title>NatGas Weekly Trend Bot</title>
 
-    <!-- PWA -->
-    <link rel="manifest" href="/manifest.json">
+    <!-- PWA basics -->
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#020617">
+    <link rel="manifest" href="/static/manifest.json">
 
-    <!-- iOS nicer icon (optional but recommended) -->
-    <link rel="apple-touch-icon" href="/static/icon-192.png">
+    <!-- iOS support -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="NatGas Bot">
+
+    <!-- Your existing styles stay below -->
 
     <style>
         :root {
@@ -353,13 +359,19 @@
     </div>
 </div>
 
-<!-- PWA: register service worker -->
+<!-- PWA Service Worker -->
 <script>
-  if ("serviceWorker" in navigator) {
-    window.addEventListener("load", () => {
-      navigator.serviceWorker.register("/service-worker.js").catch(() => {});
+if ("serviceWorker" in navigator) {
+    window.addEventListener("load", function () {
+        navigator.serviceWorker.register("/static/service-worker.js")
+            .then(function (registration) {
+                console.log("ServiceWorker registered:", registration.scope);
+            })
+            .catch(function (error) {
+                console.log("ServiceWorker registration failed:", error);
+            });
     });
-  }
+}
 </script>
 
 </body>
