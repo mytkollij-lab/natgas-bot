@@ -2,21 +2,21 @@ import math
 import time
 import re
 import requests
-
 import pandas as pd
 import yfinance as yf
 from flask import Flask, render_template, request
+import os
 
 app = Flask(__name__)
 
 # ---------------------------------------------------------------------
-# SIMPLE CACHE (keeps the app from refetching every time = faster)
+# SIMPLE CACHE (faster)
 # ---------------------------------------------------------------------
 CACHE_TTL_SECONDS = 300  # 5 minutes
 
 market_cache = {"data": None, "error": None, "timestamp": 0.0}
 weather_cache = {"info": None, "error": None, "score": 0.0, "timestamp": 0.0}
-lng_cache = {"info": None, "error": None, "score": 0.0, "timestamp": 0.0}
+fund_cache = {"info": None, "error": None, "score": 0.0, "timestamp": 0.0}
 
 # ---------------------------------------------------------------------
 # WEATHER REGIONS (US + Europe)
@@ -30,13 +30,12 @@ WEATHER_LOCATIONS = [
     {"name": "Italy (Milan)", "lat": 45.46, "lon": 9.19},
 ]
 
-
 # ---------------------------------------------------------------------
-# WEATHER HELPERS
+# WEATHER HELPERS (Open-Meteo, free)
 # ---------------------------------------------------------------------
 def fetch_weather_for_location(lat: float, lon: float):
     """
-    Use Open-Meteo free API to get next 7 days of hourly temperature.
+    Open-Meteo free API, next 7 days hourly temperature.
     Returns: (current_temp, HDD_7d, CDD_7d) with base 18°C.
     """
     base_temp = 18.0
@@ -64,13 +63,6 @@ def fetch_weather_for_location(lat: float, lon: float):
 
 
 def compute_weather_summary():
-    """
-    Aggregate weather across key regions.
-    Returns:
-      weather_info (dict),
-      weather_error (str or None),
-      weather_score (float in [-0.25, +0.25])
-    """
     locations_data = []
     total_hdd = 0.0
     total_cdd = 0.0
@@ -94,7 +86,6 @@ def compute_weather_summary():
     avg_hdd = total_hdd / count
     avg_cdd = total_cdd / count
 
-    # very rough “demand” score
     heating_strength = avg_hdd / 100.0
     cooling_strength = avg_cdd / 100.0
     weather_score = 0.0
@@ -110,7 +101,7 @@ def compute_weather_summary():
     elif cooling_strength > 0.8:
         weather_score += 0.07
 
-    # both mild = slightly bearish
+    # mild = slightly bearish
     if heating_strength < 0.4 and cooling_strength < 0.4:
         weather_score -= 0.15
 
@@ -150,127 +141,6 @@ def get_weather_summary_cached():
     weather_cache["error"] = err
     weather_cache["score"] = score
     weather_cache["timestamp"] = now
-    return info, err, score
-
-
-# ---------------------------------------------------------------------
-# LNG HELPERS (EIA Natural Gas Weekly Update page, free)
-# We parse:
-#   - number of vessels departing U.S. ports
-#   - combined LNG-carrying capacity (Bcf)
-# ---------------------------------------------------------------------
-EIA_NG_WEEKLY_URL = "https://www.eia.gov/naturalgas/weekly/"
-
-
-def compute_lng_summary():
-    """
-    Pull LNG shipping info from EIA weekly page:
-      "Forty LNG vessels with a combined LNG-carrying capacity of 151 Bcf ..."
-
-    Returns:
-      lng_info (dict),
-      lng_error (str or None),
-      lng_score (float in [-0.20, +0.20])
-    """
-    try:
-        resp = requests.get(EIA_NG_WEEKLY_URL, timeout=12)
-        resp.raise_for_status()
-        html = resp.text
-
-        # Try to find:
-        # "Forty LNG vessels with a combined LNG-carrying capacity of 151 billion cubic feet (Bcf) departed ..."
-        # We'll match vessels + capacity Bcf.
-        vessel_match = re.search(
-            r"(\b\d+\b|\bOne\b|\bTwo\b|\bThree\b|\bFour\b|\bFive\b|\bSix\b|\bSeven\b|\bEight\b|\bNine\b|\bTen\b|\bEleven\b|\bTwelve\b|\bThirteen\b|\bFourteen\b|\bFifteen\b|\bSixteen\b|\bSeventeen\b|\bEighteen\b|\bNineteen\b|\bTwenty\b|\bThirty\b|\bForty\b|\bFifty\b)\s+LNG vessels",
-            html,
-            re.IGNORECASE,
-        )
-        cap_match = re.search(
-            r"combined LNG-carrying capacity of\s+(\d+)\s+(?:billion\s+cubic\s+feet|\bBcf\b)",
-            html,
-            re.IGNORECASE,
-        )
-
-        # Convert words like "Forty" -> 40 if needed
-        word_to_num = {
-            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-            "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-            "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
-            "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
-            "thirty": 30, "forty": 40, "fifty": 50
-        }
-
-        vessels = None
-        if vessel_match:
-            raw = vessel_match.group(1).strip()
-            if raw.isdigit():
-                vessels = int(raw)
-            else:
-                vessels = word_to_num.get(raw.lower())
-
-        capacity_bcf = None
-        if cap_match:
-            capacity_bcf = float(cap_match.group(1))
-
-        if vessels is None or capacity_bcf is None:
-            return None, "Could not read LNG shipping numbers from EIA weekly page.", 0.0
-
-        # Score logic (simple + stable):
-        # Higher capacity = bullish NatGas (more export demand)
-        score = 0.0
-
-        # Capacity thresholds tuned for typical weekly ranges seen on the EIA page
-        if capacity_bcf >= 140:
-            score += 0.12
-        elif capacity_bcf >= 120:
-            score += 0.07
-        elif capacity_bcf <= 90:
-            score -= 0.10
-
-        if vessels >= 38:
-            score += 0.05
-        elif vessels <= 25:
-            score -= 0.05
-
-        score = max(min(score, 0.20), -0.20)
-
-        if score > 0.10:
-            impact_text = "LNG exports: strong (many vessels / high capacity) → bullish demand pressure."
-        elif score > 0.03:
-            impact_text = "LNG exports: slightly supportive for NatGas."
-        elif score < -0.03:
-            impact_text = "LNG exports: weak this week → less demand support (slightly bearish)."
-        else:
-            impact_text = "LNG exports: roughly neutral this week."
-
-        lng_info = {
-            "vessels": vessels,
-            "capacity_bcf": capacity_bcf,
-            "impact_text": impact_text,
-            "score": score,
-            "source": "EIA Natural Gas Weekly Update",
-        }
-        return lng_info, None, score
-
-    except Exception as e:
-        return None, f"LNG fetch error: {e}", 0.0
-
-
-def get_lng_summary_cached():
-    now = time.time()
-    age = now - lng_cache["timestamp"]
-    if age < CACHE_TTL_SECONDS and lng_cache["info"] is not None:
-        return (
-            lng_cache["info"],
-            lng_cache["error"],
-            lng_cache["score"],
-        )
-
-    info, err, score = compute_lng_summary()
-    lng_cache["info"] = info
-    lng_cache["error"] = err
-    lng_cache["score"] = score
-    lng_cache["timestamp"] = now
     return info, err, score
 
 
@@ -386,6 +256,9 @@ def get_latest_features_fresh():
         # crude 3-day return
         df["cl_ret_3d"] = cl_close.pct_change(72)  # 72 hours ≈ 3 days
 
+        # NG 5-day return (used for Henry Hub confirmation)
+        df["ng_ret_5d"] = close.pct_change(120)  # 120 hours ≈ 5 days
+
         df = df.dropna()
         if df.empty:
             return None, "Not enough candles to calculate indicators."
@@ -411,6 +284,7 @@ def get_latest_features_fresh():
             "cl_price": float(latest["cl_close"]),
             "ng_cl_ratio_z": float(latest["ng_cl_ratio_z"]),
             "cl_ret_3d": float(latest["cl_ret_3d"]),
+            "ng_ret_5d": float(latest["ng_ret_5d"]),
             "timestamp": ts_str,
         }
         return feats, None
@@ -433,7 +307,488 @@ def get_latest_features_cached():
 
 
 # ---------------------------------------------------------------------
-# CRUDE OIL IMPACT TEXT
+# FUNDAMENTALS: (1) EIA Storage surprise (Actual vs Forecast) + vs 5yr
+# ---------------------------------------------------------------------
+def _parse_bcf_number(text: str):
+    # finds things like "-177 Bcf" or "177 Bcf" or "-177B"
+    m = re.search(r"(-?\d+)\s*(?:Bcf|B)", text, re.IGNORECASE)
+    if not m:
+        return None
+    return float(m.group(1))
+
+
+def fetch_storage_from_investing():
+    """
+    Tries to scrape latest EIA NatGas Storage (Actual / Forecast / Previous)
+    from investing.com calendar page.
+    If this fails, returns None and we’ll fallback to EIA weekly.
+    """
+    url = "https://www.investing.com/economic-calendar/natural-gas-storage-386"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; NatGasBot/1.0; +https://example.com)"
+    }
+    r = requests.get(url, headers=headers, timeout=12)
+    r.raise_for_status()
+    html = r.text
+
+    # Quick-and-dirty parse around "Latest Release"
+    # We try to find the first occurrences of "Actual", "Forecast", "Previous" in that section.
+    # If their HTML changes, fallback will handle it.
+    actual = None
+    forecast = None
+    previous = None
+
+    # these patterns show up in their snippet
+    m_actual = re.search(r"Actual\s*</[^>]+>\s*([^<]+)", html, re.IGNORECASE)
+    m_fore = re.search(r"Forecast\s*</[^>]+>\s*([^<]+)", html, re.IGNORECASE)
+    m_prev = re.search(r"Previous\s*</[^>]+>\s*([^<]+)", html, re.IGNORECASE)
+
+    if m_actual:
+        actual = _parse_bcf_number(m_actual.group(1))
+    if m_fore:
+        forecast = _parse_bcf_number(m_fore.group(1))
+    if m_prev:
+        previous = _parse_bcf_number(m_prev.group(1))
+
+    # If that didn’t work, try parsing the table using pandas
+    if actual is None or forecast is None:
+        try:
+            tables = pd.read_html(html)
+            # Find table that contains 'Actual' and 'Forecast' columns
+            for t in tables:
+                cols = [str(c).lower() for c in t.columns]
+                if any("actual" in c for c in cols) and any("forecast" in c for c in cols):
+                    row0 = t.iloc[0]
+                    # try typical column names
+                    for c in t.columns:
+                        if str(c).lower().strip() == "actual":
+                            actual = _parse_bcf_number(str(row0[c]))
+                        if str(c).lower().strip() == "forecast":
+                            forecast = _parse_bcf_number(str(row0[c]))
+                        if str(c).lower().strip() == "previous":
+                            previous = _parse_bcf_number(str(row0[c]))
+                    break
+        except Exception:
+            pass
+
+    if actual is None or forecast is None:
+        return None
+
+    return {"actual_bcf": actual, "forecast_bcf": forecast, "previous_bcf": previous}
+
+
+def fetch_storage_5yr_from_eia_weekly():
+    """
+    Scrape EIA weekly page text to get:
+    - actual net withdrawal/injection
+    - five-year average
+    Returns dict or None.
+    """
+    url = "https://www.eia.gov/naturalgas/weekly/"
+    r = requests.get(url, timeout=12)
+    r.raise_for_status()
+    txt = r.text
+
+    # EIA usually has a sentence like:
+    # "Net withdrawals from storage totaled 177 Bcf ... compared with the five-year ... average net withdrawals of 89 Bcf"
+    # We'll capture both numbers.
+    m = re.search(
+        r"Net\s+(withdrawals|injections)\s+from\s+storage\s+totaled\s+(\d+)\s+Bcf.*?five-year.*?average\s+net\s+(withdrawals|injections)\s+of\s+(\d+)\s+Bcf",
+        txt,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not m:
+        return None
+
+    actual_dir = m.group(1).lower()
+    actual_val = float(m.group(2))
+    avg_dir = m.group(3).lower()
+    avg_val = float(m.group(4))
+
+    # Convert into signed "change":
+    # injections => +, withdrawals => -
+    actual_change = actual_val if "injection" in actual_dir else -actual_val
+    avg_change = avg_val if "injection" in avg_dir else -avg_val
+
+    return {"actual_bcf": actual_change, "fiveyr_bcf": avg_change}
+
+
+def score_storage(actual_bcf: float, forecast_bcf: float | None, fiveyr_bcf: float | None):
+    """
+    Storage change sign convention:
+      + = injection
+      - = withdrawal
+
+    Surprise = actual - forecast
+    If surprise is negative (more withdrawal / smaller injection) => bullish.
+    """
+    score = 0.0
+    parts = []
+    surprise = None
+
+    if forecast_bcf is not None:
+        surprise = actual_bcf - forecast_bcf
+        # map surprise into [-0.20, +0.20]
+        if surprise <= -30:
+            s = +0.20
+        elif surprise <= -10:
+            s = +0.10
+        elif surprise < 10:
+            s = 0.00
+        elif surprise < 30:
+            s = -0.10
+        else:
+            s = -0.20
+        parts.append(("surprise", s, surprise))
+    else:
+        s = 0.0
+        parts.append(("surprise", s, None))
+
+    if fiveyr_bcf is not None:
+        # compare to seasonal normal
+        delta_vs_5yr = actual_bcf - fiveyr_bcf
+        # if actual is more withdrawal than normal => more negative => bullish
+        if delta_vs_5yr <= -30:
+            s2 = +0.12
+        elif delta_vs_5yr <= -10:
+            s2 = +0.06
+        elif delta_vs_5yr < 10:
+            s2 = 0.00
+        elif delta_vs_5yr < 30:
+            s2 = -0.06
+        else:
+            s2 = -0.12
+        parts.append(("vs5yr", s2, delta_vs_5yr))
+    else:
+        s2 = 0.0
+        parts.append(("vs5yr", s2, None))
+
+    # combine (surprise strongest)
+    score = 0.0
+    for name, s_part, _ in parts:
+        if name == "surprise":
+            score += 0.70 * s_part
+        else:
+            score += 0.30 * s_part
+
+    score = max(min(score, 0.25), -0.25)
+
+    # text
+    if score > 0.12:
+        txt = "EIA Storage: bullish (tighter than expected / stronger withdrawal)."
+    elif score > 0.04:
+        txt = "EIA Storage: slightly bullish."
+    elif score < -0.12:
+        txt = "EIA Storage: bearish (looser than expected / bigger injection)."
+    elif score < -0.04:
+        txt = "EIA Storage: slightly bearish."
+    else:
+        txt = "EIA Storage: neutral."
+
+    return score, txt, surprise
+
+
+# ---------------------------------------------------------------------
+# FUNDAMENTALS: (2) Henry Hub spot confirmation (free scrape from FRED page)
+# ---------------------------------------------------------------------
+def fetch_henry_hub_spot_last_days():
+    """
+    Scrape FRED Henry Hub (DHHNGSP) web page for recent daily values.
+    Not perfect, but free and stable enough.
+    Returns list of (date_str, value_float) newest-first or None.
+    """
+    url = "https://fred.stlouisfed.org/series/DHHNGSP"
+    r = requests.get(url, timeout=12)
+    r.raise_for_status()
+    html = r.text
+
+    # We grab multiple lines like "2025-12-08: 5.19"
+    pairs = re.findall(r"(\d{4}-\d{2}-\d{2})\s*:\s*([0-9]+\.[0-9]+)", html)
+    if not pairs:
+        return None
+
+    # FRED page includes many, we keep first ~10 occurrences
+    out = []
+    seen = set()
+    for d, v in pairs:
+        if d in seen:
+            continue
+        seen.add(d)
+        out.append((d, float(v)))
+        if len(out) >= 10:
+            break
+
+    if not out:
+        return None
+    return out  # newest-first in practice
+
+
+def score_henry_hub(features, series_pairs):
+    """
+    Compare Henry Hub spot 5d change vs NG futures 5d change.
+    If spot confirms futures direction => small boost.
+    If diverges => small penalty.
+    """
+    if not series_pairs or len(series_pairs) < 2:
+        return 0.0, "Henry Hub spot: unavailable.", None, None
+
+    newest = series_pairs[0][1]
+    # try to use ~5 trading days back if available; else use last element
+    old = series_pairs[min(5, len(series_pairs) - 1)][1]
+
+    if old <= 0:
+        return 0.0, "Henry Hub spot: unavailable.", newest, None
+
+    spot_ret = (newest - old) / old
+    fut_ret = features.get("ng_ret_5d", 0.0)
+
+    # confirmation logic
+    score = 0.0
+    if fut_ret > 0 and spot_ret > 0:
+        score = +0.08
+        txt = "Henry Hub spot: confirming bullish move (spot + futures up)."
+    elif fut_ret < 0 and spot_ret < 0:
+        score = +0.08
+        txt = "Henry Hub spot: confirming bearish move (spot + futures down)."
+    elif fut_ret > 0 and spot_ret < 0:
+        score = -0.08
+        txt = "Henry Hub spot: diverging (futures up, spot down) → caution."
+    elif fut_ret < 0 and spot_ret > 0:
+        score = -0.08
+        txt = "Henry Hub spot: diverging (futures down, spot up) → caution."
+    else:
+        score = 0.0
+        txt = "Henry Hub spot: roughly neutral."
+
+    score = max(min(score, 0.12), -0.12)
+    return score, txt, newest, spot_ret
+
+
+# ---------------------------------------------------------------------
+# FUNDAMENTALS: (3) EU Storage via GIE AGSI API (free, but needs API key)
+# ---------------------------------------------------------------------
+def fetch_eu_storage_gie():
+    """
+    Uses GIE AGSI API (requires free API key).
+    Endpoint example:
+      https://agsi.gie.eu/api?type=eu
+    header:
+      x-key: YOUR_API_KEY
+    """
+    api_key = os.environ.get("GIE_API_KEY", "").strip()
+    if not api_key:
+        return None, "EU Storage: missing GIE_API_KEY (free key required)."
+
+    url = "https://agsi.gie.eu/api?type=eu"
+    headers = {"x-key": api_key}
+    r = requests.get(url, headers=headers, timeout=12)
+    r.raise_for_status()
+    data = r.json()
+
+    rows = data.get("data", [])
+    if not rows:
+        return None, "EU Storage: no data returned from GIE API."
+
+    row = rows[0]
+
+    # Different versions expose different keys; we try common ones safely.
+    # Some responses include "full" (percentage), others might not.
+    full = None
+    for key in ["full", "gasInStorage", "gasInStorageFull", "consumptionFull"]:
+        if key in row:
+            try:
+                full = float(row[key])
+                break
+            except Exception:
+                pass
+
+    gas_day = row.get("gas_day") or row.get("gasDayStart") or None
+
+    return {"full": full, "gas_day": gas_day, "raw": row}, None
+
+
+def score_eu_storage(eu_info):
+    """
+    Uses EU storage fullness (%) as a global LNG tightness proxy.
+    """
+    if not eu_info or eu_info.get("full") is None:
+        return 0.0, "EU Storage: unavailable.", None
+
+    full = eu_info["full"]
+
+    # If 'full' is something like 7.87 (consumptionFull) we detect unrealistic and neutral it.
+    # Typical fullness should be 0-100 range.
+    if full <= 0 or full > 100:
+        return 0.0, "EU Storage: data format unclear (treated neutral).", full
+
+    if full < 60:
+        score = +0.15
+        txt = f"EU Storage: low ({full:.1f}%) → supportive (more LNG demand)."
+    elif full < 75:
+        score = +0.05
+        txt = f"EU Storage: moderate ({full:.1f}%) → slightly supportive."
+    elif full < 90:
+        score = 0.0
+        txt = f"EU Storage: comfortable ({full:.1f}%) → neutral."
+    else:
+        score = -0.15
+        txt = f"EU Storage: very high ({full:.1f}%) → headwind (less LNG urgency)."
+
+    return score, txt, full
+
+
+# ---------------------------------------------------------------------
+# FUNDAMENTALS SUMMARY (ALL 3) -> one score
+# ---------------------------------------------------------------------
+def compute_fundamentals(features):
+    info = {
+        "storage": {"available": False},
+        "henry": {"available": False},
+        "eu": {"available": False},
+        "total_score": 0.0,
+        "impact_text": "Fundamentals: neutral."
+    }
+
+    total = 0.0
+
+    # 1) Storage
+    storage_market = None
+    storage_5yr = None
+    storage_err = None
+
+    try:
+        storage_market = fetch_storage_from_investing()
+    except Exception as e:
+        storage_err = f"Market forecast fetch failed: {e}"
+
+    try:
+        storage_5yr = fetch_storage_5yr_from_eia_weekly()
+    except Exception:
+        pass
+
+    if storage_market:
+        actual = storage_market["actual_bcf"]
+        forecast = storage_market["forecast_bcf"]
+        previous = storage_market.get("previous_bcf")
+        fiveyr = storage_5yr["fiveyr_bcf"] if storage_5yr else None
+
+        storage_score, storage_text, surprise = score_storage(actual, forecast, fiveyr)
+        info["storage"] = {
+            "available": True,
+            "actual_bcf": actual,
+            "forecast_bcf": forecast,
+            "previous_bcf": previous,
+            "fiveyr_bcf": fiveyr,
+            "surprise_bcf": surprise,
+            "score": storage_score,
+            "text": storage_text,
+        }
+        total += storage_score
+    else:
+        # fallback: if we at least have EIA weekly actual+5yr, score off that
+        if storage_5yr and "actual_bcf" in storage_5yr and "fiveyr_bcf" in storage_5yr:
+            actual = storage_5yr["actual_bcf"]
+            fiveyr = storage_5yr["fiveyr_bcf"]
+            storage_score, storage_text, _ = score_storage(actual, None, fiveyr)
+            info["storage"] = {
+                "available": True,
+                "actual_bcf": actual,
+                "forecast_bcf": None,
+                "previous_bcf": None,
+                "fiveyr_bcf": fiveyr,
+                "surprise_bcf": None,
+                "score": storage_score,
+                "text": storage_text + " (forecast unavailable; used 5-yr comparison)",
+            }
+            total += storage_score
+        else:
+            info["storage"] = {
+                "available": False,
+                "score": 0.0,
+                "text": "EIA Storage: unavailable (treated neutral).",
+                "error": storage_err,
+            }
+
+    # 2) Henry Hub spot
+    try:
+        pairs = fetch_henry_hub_spot_last_days()
+        h_score, h_text, h_now, h_ret = score_henry_hub(features, pairs)
+        info["henry"] = {
+            "available": pairs is not None,
+            "spot_now": h_now,
+            "spot_ret_approx": h_ret,
+            "score": h_score,
+            "text": h_text,
+        }
+        total += h_score
+    except Exception as e:
+        info["henry"] = {
+            "available": False,
+            "score": 0.0,
+            "text": "Henry Hub spot: unavailable (treated neutral).",
+            "error": str(e),
+        }
+
+    # 3) EU Storage
+    eu_info = None
+    eu_err = None
+    try:
+        eu_info, eu_err = fetch_eu_storage_gie()
+    except Exception as e:
+        eu_err = str(e)
+
+    if eu_info:
+        eu_score, eu_text, eu_full = score_eu_storage(eu_info)
+        info["eu"] = {
+            "available": True,
+            "full": eu_full,
+            "gas_day": eu_info.get("gas_day"),
+            "score": eu_score,
+            "text": eu_text,
+        }
+        total += eu_score
+    else:
+        info["eu"] = {
+            "available": False,
+            "score": 0.0,
+            "text": "EU Storage: unavailable (treated neutral).",
+            "error": eu_err,
+        }
+
+    # clamp total fundamentals impact so it can't dominate everything
+    total = max(min(total, 0.40), -0.40)
+    info["total_score"] = total
+
+    if total > 0.18:
+        info["impact_text"] = "Fundamentals: strongly supportive (bullish)."
+    elif total > 0.06:
+        info["impact_text"] = "Fundamentals: slightly supportive (bullish lean)."
+    elif total < -0.18:
+        info["impact_text"] = "Fundamentals: strongly negative (bearish)."
+    elif total < -0.06:
+        info["impact_text"] = "Fundamentals: slightly negative (bearish lean)."
+    else:
+        info["impact_text"] = "Fundamentals: neutral / mixed."
+
+    return info, None, total
+
+
+def get_fundamentals_cached(features):
+    now = time.time()
+    age = now - fund_cache["timestamp"]
+    if age < CACHE_TTL_SECONDS and fund_cache["info"] is not None:
+        return fund_cache["info"], fund_cache["error"], fund_cache["score"]
+
+    info, err, score = compute_fundamentals(features)
+    fund_cache["info"] = info
+    fund_cache["error"] = err
+    fund_cache["score"] = score
+    fund_cache["timestamp"] = now
+    return info, err, score
+
+
+# ---------------------------------------------------------------------
+# CRUDE OIL IMPACT TEXT (unchanged)
 # ---------------------------------------------------------------------
 def compute_crude_impact(features):
     ratio_z = features.get("ng_cl_ratio_z", 0.0)
@@ -452,13 +807,9 @@ def compute_crude_impact(features):
         trend_label = "sideways / range-bound"
 
     if trend_label.startswith("strong up") and ratio_z < -0.5:
-        impact_text = (
-            "Crude is rising strongly and NatGas is cheap vs oil → supportive (bullish) backdrop."
-        )
+        impact_text = "Crude rising strongly and NatGas cheap vs oil → supportive (bullish)."
     elif trend_label.startswith("strong down") and ratio_z > 0.5:
-        impact_text = (
-            "Crude is falling strongly and NatGas is rich vs oil → headwind (bearish) backdrop."
-        )
+        impact_text = "Crude falling strongly and NatGas rich vs oil → headwind (bearish)."
     elif "uptrend" in trend_label and ratio_z <= 0:
         impact_text = "Crude drifting higher; NatGas fairly priced/cheap vs oil → slightly bullish."
     elif "downtrend" in trend_label and ratio_z >= 0:
@@ -474,10 +825,9 @@ def compute_crude_impact(features):
 
 
 # ---------------------------------------------------------------------
-# SIGNAL LOGIC (BUY / SELL / FLAT)
-# (NOW includes LNG score)
+# SIGNAL LOGIC (BUY / SELL / FLAT) + WEATHER + FUNDAMENTALS
 # ---------------------------------------------------------------------
-def make_signal(features, weather_score: float = 0.0, lng_score: float = 0.0):
+def make_signal(features, weather_score: float = 0.0, fundamentals_score: float = 0.0):
     last_price = features["last_price"]
     ema_fast_val = features["ema_fast"]
     ema_slow_val = features["ema_slow"]
@@ -538,14 +888,15 @@ def make_signal(features, weather_score: float = 0.0, lng_score: float = 0.0):
         else:
             confidence += 0.5 * weather_score
 
-    # LNG nudges (export strength = bullish NatGas)
-    if lng_score != 0.0:
+    # fundamentals nudges (this is what you asked for)
+    # if fundamentals bullish and direction UP => boost, DOWN => reduce.
+    if fundamentals_score != 0.0:
         if direction == "UP":
-            confidence += lng_score
+            confidence += fundamentals_score
         elif direction == "DOWN":
-            confidence -= lng_score
+            confidence -= fundamentals_score
         else:
-            confidence += 0.5 * lng_score
+            confidence += 0.3 * fundamentals_score
 
     confidence = float(min(max(confidence, 0.4), 0.98))
 
@@ -567,14 +918,14 @@ def make_signal(features, weather_score: float = 0.0, lng_score: float = 0.0):
         "stop_loss": stop_loss,
         "take_profit": take_profit,
         "weather_score": weather_score,
-        "lng_score": lng_score,
+        "fundamentals_score": fundamentals_score,
     }
 
 
 # ---------------------------------------------------------------------
 # WEEKLY OUTLOOK (projection)
 # ---------------------------------------------------------------------
-def make_weekly_forecast(signal, features):
+def make_weekly_forecast(signal, features, fundamentals_score: float = 0.0):
     if not signal or not features:
         return []
 
@@ -591,11 +942,24 @@ def make_weekly_forecast(signal, features):
     if vol_24h and not math.isnan(vol_24h):
         vol_score = min(vol_24h * 1000, 30)
 
+    # fundamentals can extend bias through week slightly
+    fund_bias = 0.0
+    if fundamentals_score > 0.12:
+        fund_bias = +0.04
+    elif fundamentals_score > 0.05:
+        fund_bias = +0.02
+    elif fundamentals_score < -0.12:
+        fund_bias = -0.04
+    elif fundamentals_score < -0.05:
+        fund_bias = -0.02
+
     days = ["Today / next 24h", "Day 2", "Day 3", "Day 4", "Day 5"]
     outlook = []
 
     for i, label in enumerate(days):
-        day_conf = max(min(base_conf - 0.03 * i, 0.95), 0.35)
+        # confidence fades into the week, but fundamentals slows the fade a bit
+        day_conf = base_conf - 0.03 * i + fund_bias
+        day_conf = max(min(day_conf, 0.95), 0.35)
 
         if direction == "FLAT":
             bias = "CHOPPY"
@@ -606,11 +970,11 @@ def make_weekly_forecast(signal, features):
                 bias = direction
 
         if bias == "UP":
-            note = "Bullish bias continues while current uptrend and demand factors stay intact."
+            note = "Bullish bias continues while uptrend + fundamentals stay intact."
         elif bias == "DOWN":
-            note = "Bearish bias continues while current downtrend and demand factors stay intact."
+            note = "Bearish bias continues while downtrend + fundamentals stay intact."
         else:
-            note = "Price likely to be more sideways / noisy; trend edge is weaker here."
+            note = "More sideways/noisy; edge is weaker here."
 
         if vol_score > 20:
             note += " Volatility: high – expect bigger swings."
@@ -651,8 +1015,9 @@ def index():
     weather_error = None
     cl_impact = None
 
-    lng_info = None
-    lng_error = None
+    fundamentals_info = None
+    fundamentals_error = None
+    fundamentals_score = 0.0
 
     # 1) Market data
     feats, data_error = get_latest_features_cached()
@@ -667,16 +1032,15 @@ def index():
     weather_info, weather_error, ws = get_weather_summary_cached()
     weather_score = ws
 
-    # 3) LNG
-    lng_score = 0.0
-    lng_info, lng_error, ls = get_lng_summary_cached()
-    lng_score = ls
+    # 3) Fundamentals (needs features)
+    if feats is not None and error_msg is None:
+        fundamentals_info, fundamentals_error, fundamentals_score = get_fundamentals_cached(feats)
 
     # 4) Signal & outlook
     if feats is not None and error_msg is None:
         cl_impact = compute_crude_impact(feats)
-        signal = make_signal(feats, weather_score, lng_score)
-        weekly_outlook = make_weekly_forecast(signal, feats)
+        signal = make_signal(feats, weather_score, fundamentals_score)
+        weekly_outlook = make_weekly_forecast(signal, feats, fundamentals_score)
 
     # 5) Position sizing
     if request.method == "POST":
@@ -710,8 +1074,8 @@ def index():
         weather_info=weather_info,
         weather_error=weather_error,
         cl_impact=cl_impact,
-        lng_info=lng_info,
-        lng_error=lng_error,
+        fundamentals_info=fundamentals_info,
+        fundamentals_error=fundamentals_error,
     )
 
 
