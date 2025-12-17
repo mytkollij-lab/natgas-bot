@@ -1,28 +1,13 @@
 import math
 import time
 import requests
+import json
 
 import pandas as pd
 import yfinance as yf
-from flask import Flask, render_template, request, send_from_directory
+from flask import Flask, render_template, request
 
 app = Flask(__name__)
-
-# ---------------------------------------------------------------------
-# PWA ROUTES
-# ---------------------------------------------------------------------
-@app.route("/manifest.json")
-def manifest():
-    return send_from_directory("static", "manifest.json")
-
-
-@app.route("/service-worker.js")
-def service_worker():
-    response = send_from_directory("static", "service-worker.js")
-    # Service workers must be served with correct scope and ideally no aggressive caching.
-    response.headers["Cache-Control"] = "no-cache"
-    return response
-
 
 # ---------------------------------------------------------------------
 # SIMPLE CACHE (keeps the app from refetching every time = faster)
@@ -31,6 +16,7 @@ CACHE_TTL_SECONDS = 300  # 5 minutes
 
 market_cache = {"data": None, "error": None, "timestamp": 0.0}
 weather_cache = {"info": None, "error": None, "score": 0.0, "timestamp": 0.0}
+chart_cache = {"data": None, "error": None, "timestamp": 0.0}
 
 # ---------------------------------------------------------------------
 # WEATHER REGIONS (US + Europe)
@@ -78,13 +64,6 @@ def fetch_weather_for_location(lat: float, lon: float):
 
 
 def compute_weather_summary():
-    """
-    Aggregate weather across key regions.
-    Returns:
-      weather_info (dict),
-      weather_error (str or None),
-      weather_score (float in [-0.25, +0.25])
-    """
     locations_data = []
     total_hdd = 0.0
     total_cdd = 0.0
@@ -108,12 +87,10 @@ def compute_weather_summary():
     avg_hdd = total_hdd / count
     avg_cdd = total_cdd / count
 
-    # very rough “demand” score
     heating_strength = avg_hdd / 100.0
     cooling_strength = avg_cdd / 100.0
     weather_score = 0.0
 
-    # colder/ hotter = bullish NatGas
     if heating_strength > 1.5:
         weather_score += 0.20
     elif heating_strength > 0.8:
@@ -124,7 +101,6 @@ def compute_weather_summary():
     elif cooling_strength > 0.8:
         weather_score += 0.07
 
-    # both mild = slightly bearish
     if heating_strength < 0.4 and cooling_strength < 0.4:
         weather_score -= 0.15
 
@@ -326,7 +302,87 @@ def get_latest_features_cached():
 
 
 # ---------------------------------------------------------------------
-# CRUDE OIL IMPACT TEXT
+# CHART DATA (graphs)
+# ---------------------------------------------------------------------
+def get_chart_data_fresh():
+    """
+    Light-weight chart dataset (last ~7 days hourly) for NG & CL with indicators.
+    """
+    try:
+        ng = yf.download("NG=F", period="10d", interval="1h", progress=False, threads=False)
+        cl = yf.download("CL=F", period="10d", interval="1h", progress=False, threads=False)
+
+        if ng is None or ng.empty:
+            return None, "No NatGas chart data received from Yahoo Finance."
+        if cl is None or cl.empty:
+            return None, "No Crude chart data received from Yahoo Finance."
+
+        df = pd.DataFrame(index=ng.index)
+        df["ng_close"] = ng["Close"]
+        df["cl_close"] = cl["Close"]
+        df = df.dropna()
+        if df.empty:
+            return None, "Chart data empty after cleaning."
+
+        # Indicators on chart data
+        df["ema10"] = ema(df["ng_close"], 10)
+        df["ema30"] = ema(df["ng_close"], 30)
+        df["ema50"] = ema(df["ng_close"], 50)
+        df["rsi14"] = rsi(df["ng_close"], 14)
+        macd_line, macd_signal, macd_hist = macd(df["ng_close"])
+        df["macd_hist"] = macd_hist
+
+        df["ng_cl_ratio"] = df["ng_close"] / df["cl_close"]
+        ratio = df["ng_cl_ratio"]
+        ratio_ma = ratio.rolling(50).mean()
+        ratio_std = ratio.rolling(50).std()
+        df["ratio_z"] = (ratio - ratio_ma) / (ratio_std + 1e-9)
+
+        df = df.dropna()
+        if df.empty:
+            return None, "Not enough chart candles after indicator warm-up."
+
+        # Keep last ~7 days worth of hourly data (approx 168 points)
+        df = df.tail(180)
+
+        # Labels as UTC-ish strings
+        labels = []
+        for ts in df.index:
+            try:
+                labels.append(ts.tz_convert("UTC").strftime("%m-%d %H:%M"))
+            except Exception:
+                labels.append(str(ts))
+
+        out = {
+            "labels": labels,
+            "ng_close": [float(x) for x in df["ng_close"].values],
+            "ema10": [float(x) for x in df["ema10"].values],
+            "ema30": [float(x) for x in df["ema30"].values],
+            "ema50": [float(x) for x in df["ema50"].values],
+            "rsi14": [float(x) for x in df["rsi14"].values],
+            "macd_hist": [float(x) for x in df["macd_hist"].values],
+            "ratio_z": [float(x) for x in df["ratio_z"].values],
+        }
+        return out, None
+    except Exception as e:
+        return None, f"Chart data error: {e}"
+
+
+def get_chart_data_cached():
+    now = time.time()
+    age = now - chart_cache["timestamp"]
+    if age < CACHE_TTL_SECONDS and chart_cache["data"] is not None:
+        return chart_cache["data"], chart_cache["error"]
+
+    data, err = get_chart_data_fresh()
+    chart_cache["data"] = data
+    chart_cache["error"] = err
+    chart_cache["timestamp"] = now
+    return data, err
+
+
+# ---------------------------------------------------------------------
+# CRUDE OIL IMPACT TEXT + METER SCORE
 # ---------------------------------------------------------------------
 def compute_crude_impact(features):
     ratio_z = features.get("ng_cl_ratio_z", 0.0)
@@ -345,24 +401,26 @@ def compute_crude_impact(features):
         trend_label = "sideways / range-bound"
 
     if trend_label.startswith("strong up") and ratio_z < -0.5:
-        impact_text = (
-            "Crude is rising strongly and NatGas is cheap vs oil → supportive (bullish) backdrop."
-        )
+        impact_text = "Crude rising strongly and NatGas cheap vs oil → supportive (bullish)."
+        crude_score = +0.18
     elif trend_label.startswith("strong down") and ratio_z > 0.5:
-        impact_text = (
-            "Crude is falling strongly and NatGas is rich vs oil → headwind (bearish) backdrop."
-        )
+        impact_text = "Crude falling strongly and NatGas rich vs oil → headwind (bearish)."
+        crude_score = -0.18
     elif "uptrend" in trend_label and ratio_z <= 0:
-        impact_text = "Crude drifting higher; NatGas fairly priced/cheap vs oil → slightly bullish."
+        impact_text = "Crude drifting higher; NatGas cheap/fair vs oil → slightly bullish."
+        crude_score = +0.08
     elif "downtrend" in trend_label and ratio_z >= 0:
-        impact_text = "Crude drifting lower; NatGas fairly priced/expensive vs oil → slightly bearish."
+        impact_text = "Crude drifting lower; NatGas expensive/fair vs oil → slightly bearish."
+        crude_score = -0.08
     else:
-        impact_text = "Crude/NG spread looks mostly neutral right now."
+        impact_text = "Crude/NG spread looks mostly neutral."
+        crude_score = 0.0
 
     return {
         "cl_ret_3d_pct": cl_ret_pct,
         "trend_label": trend_label,
         "impact_text": impact_text,
+        "score": crude_score,  # for the meter
     }
 
 
@@ -450,6 +508,7 @@ def make_signal(features, weather_score: float = 0.0):
         "stop_loss": stop_loss,
         "take_profit": take_profit,
         "weather_score": weather_score,
+        "trend_strength": float(min(max(trend_strength * 100, 0), 100)),  # 0..100 meter
     }
 
 
@@ -482,17 +541,14 @@ def make_weekly_forecast(signal, features):
         if direction == "FLAT":
             bias = "CHOPPY"
         else:
-            if day_conf < 0.5:
-                bias = "CHOPPY"
-            else:
-                bias = direction
+            bias = "CHOPPY" if day_conf < 0.5 else direction
 
         if bias == "UP":
-            note = "Bullish bias continues while current uptrend and demand factors stay intact."
+            note = "Bullish bias continues while uptrend & demand factors stay intact."
         elif bias == "DOWN":
-            note = "Bearish bias continues while current downtrend and demand factors stay intact."
+            note = "Bearish bias continues while downtrend & demand factors stay intact."
         else:
-            note = "Price likely to be more sideways / noisy; trend edge is weaker here."
+            note = "Sideways/noisy likely; trend edge weaker."
 
         if vol_score > 20:
             note += " Volatility: high – expect bigger swings."
@@ -533,6 +589,9 @@ def index():
     weather_error = None
     cl_impact = None
 
+    chart_data = None
+    chart_error = None
+
     # 1) Market data
     feats, data_error = get_latest_features_cached()
     if data_error:
@@ -552,7 +611,10 @@ def index():
         signal = make_signal(feats, weather_score)
         weekly_outlook = make_weekly_forecast(signal, feats)
 
-    # 4) Position sizing
+    # 4) Charts
+    chart_data, chart_error = get_chart_data_cached()
+
+    # 5) Position sizing
     if request.method == "POST":
         try:
             account_balance = float(request.form.get("account_balance", "0"))
@@ -584,6 +646,8 @@ def index():
         weather_info=weather_info,
         weather_error=weather_error,
         cl_impact=cl_impact,
+        chart_data_json=json.dumps(chart_data) if chart_data else None,
+        chart_error=chart_error,
     )
 
 
