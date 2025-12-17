@@ -35,7 +35,7 @@ WEATHER_LOCATIONS = [
 # ---------------------------------------------------------------------
 def fetch_weather_for_location(lat: float, lon: float):
     """
-    Open-Meteo free API, next 7 days hourly temperature.
+    Open-Meteo free API: next 7 days hourly temperature.
     Returns: (current_temp, HDD_7d, CDD_7d) base 18°C.
     """
     base_temp = 18.0
@@ -124,10 +124,10 @@ def compute_weather_summary():
     return weather_info, None, weather_score
 
 
-def get_weather_summary_cached():
+def get_weather_summary_cached(force_refresh: bool = False):
     now = time.time()
     age = now - weather_cache["timestamp"]
-    if age < CACHE_TTL_SECONDS and weather_cache["info"] is not None:
+    if (not force_refresh) and age < CACHE_TTL_SECONDS and weather_cache["info"] is not None:
         return (
             weather_cache["info"],
             weather_cache["error"],
@@ -186,7 +186,7 @@ def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
 
 
 # ---------------------------------------------------------------------
-# MARKET DATA + FEATURES
+# MARKET FEATURES
 # ---------------------------------------------------------------------
 def get_latest_features_fresh():
     try:
@@ -241,7 +241,7 @@ def get_latest_features_fresh():
         ratio_std = ratio.rolling(50).std()
         df["ng_cl_ratio_z"] = (ratio - ratio_ma) / (ratio_std + 1e-9)
 
-        df["cl_ret_3d"] = cl_close.pct_change(72)  # 72 hours ≈ 3 days
+        df["cl_ret_3d"] = cl_close.pct_change(72)
 
         df = df.dropna()
         if df.empty:
@@ -276,10 +276,10 @@ def get_latest_features_fresh():
         return None, f"Data error: {e}"
 
 
-def get_latest_features_cached():
+def get_latest_features_cached(force_refresh: bool = False):
     now = time.time()
     age = now - market_cache["timestamp"]
-    if age < CACHE_TTL_SECONDS and market_cache["data"] is not None:
+    if (not force_refresh) and age < CACHE_TTL_SECONDS and market_cache["data"] is not None:
         return market_cache["data"], market_cache["error"]
 
     feats, err = get_latest_features_fresh()
@@ -290,10 +290,11 @@ def get_latest_features_cached():
 
 
 # ---------------------------------------------------------------------
-# CHART DATA (graphs)
+# CHART DATA (Candles + overlays)
 # ---------------------------------------------------------------------
 def get_chart_data_fresh():
     try:
+        # Candles need OHLC
         ng = yf.download("NG=F", period="10d", interval="1h", progress=False, threads=False)
         cl = yf.download("CL=F", period="10d", interval="1h", progress=False, threads=False)
 
@@ -303,20 +304,24 @@ def get_chart_data_fresh():
             return None, "No Crude chart data received from Yahoo Finance."
 
         df = pd.DataFrame(index=ng.index)
-        df["ng_close"] = ng["Close"]
+        df["open"] = ng["Open"]
+        df["high"] = ng["High"]
+        df["low"] = ng["Low"]
+        df["close"] = ng["Close"]
         df["cl_close"] = cl["Close"]
         df = df.dropna()
+
         if df.empty:
             return None, "Chart data empty after cleaning."
 
-        df["ema10"] = ema(df["ng_close"], 10)
-        df["ema30"] = ema(df["ng_close"], 30)
-        df["ema50"] = ema(df["ng_close"], 50)
-        df["rsi14"] = rsi(df["ng_close"], 14)
-        macd_line, macd_signal, macd_hist = macd(df["ng_close"])
+        df["ema10"] = ema(df["close"], 10)
+        df["ema30"] = ema(df["close"], 30)
+        df["ema50"] = ema(df["close"], 50)
+        df["rsi14"] = rsi(df["close"], 14)
+        macd_line, macd_signal, macd_hist = macd(df["close"])
         df["macd_hist"] = macd_hist
 
-        df["ng_cl_ratio"] = df["ng_close"] / df["cl_close"]
+        df["ng_cl_ratio"] = df["close"] / df["cl_close"]
         ratio = df["ng_cl_ratio"]
         ratio_ma = ratio.rolling(50).mean()
         ratio_std = ratio.rolling(50).std()
@@ -326,34 +331,47 @@ def get_chart_data_fresh():
         if df.empty:
             return None, "Not enough chart candles after indicator warm-up."
 
-        df = df.tail(180)  # ~7 days hourly
+        df = df.tail(220)
 
         labels = []
-        for ts in df.index:
+        candles = []
+        for ts, row in df.iterrows():
             try:
-                labels.append(ts.tz_convert("UTC").strftime("%Y-%m-%d %H:%M"))
+                ts_str = ts.tz_convert("UTC").strftime("%Y-%m-%d %H:%M")
             except Exception:
-                labels.append(str(ts))
+                ts_str = str(ts)
+            labels.append(ts_str)
+            candles.append(
+                {
+                    "x": ts_str,
+                    "o": float(row["open"]),
+                    "h": float(row["high"]),
+                    "l": float(row["low"]),
+                    "c": float(row["close"]),
+                }
+            )
 
         out = {
             "labels": labels,
-            "ng_close": [float(x) for x in df["ng_close"].values],
+            "candles": candles,
             "ema10": [float(x) for x in df["ema10"].values],
             "ema30": [float(x) for x in df["ema30"].values],
             "ema50": [float(x) for x in df["ema50"].values],
             "rsi14": [float(x) for x in df["rsi14"].values],
             "macd_hist": [float(x) for x in df["macd_hist"].values],
             "ratio_z": [float(x) for x in df["ratio_z"].values],
+            "close": [float(x) for x in df["close"].values],
         }
         return out, None
+
     except Exception as e:
         return None, f"Chart data error: {e}"
 
 
-def get_chart_data_cached():
+def get_chart_data_cached(force_refresh: bool = False):
     now = time.time()
     age = now - chart_cache["timestamp"]
-    if age < CACHE_TTL_SECONDS and chart_cache["data"] is not None:
+    if (not force_refresh) and age < CACHE_TTL_SECONDS and chart_cache["data"] is not None:
         return chart_cache["data"], chart_cache["error"]
 
     data, err = get_chart_data_fresh()
@@ -364,7 +382,7 @@ def get_chart_data_cached():
 
 
 # ---------------------------------------------------------------------
-# CRUDE OIL IMPACT TEXT + SCORE
+# CRUDE IMPACT
 # ---------------------------------------------------------------------
 def compute_crude_impact(features):
     ratio_z = features.get("ng_cl_ratio_z", 0.0)
@@ -407,17 +425,12 @@ def compute_crude_impact(features):
 
 
 # ---------------------------------------------------------------------
-# SIGNAL LOGIC (BUY / SELL / FLAT) + ETA (rough)
+# SIGNAL + ETA
 # ---------------------------------------------------------------------
 def _eta_hours(distance: float, atr_per_hour: float):
-    """
-    Rough ETA in hours using ATR as average 1-hour movement.
-    This is NOT a prediction, only a rough "time scale".
-    """
     if atr_per_hour is None or atr_per_hour <= 0 or distance <= 0:
         return None
     hours = distance / atr_per_hour
-    # clamp to avoid silly numbers
     return float(max(0.5, min(hours, 240)))
 
 
@@ -456,7 +469,6 @@ def make_signal(features, weather_score: float = 0.0):
         direction = "FLAT"
         base_conf = 0.5
 
-    # stop distance based on ATR/vol
     if atr_14 and not math.isnan(atr_14) and atr_14 > 0:
         atr_pct = atr_14 / (last_price + 1e-9)
         stop_pct = min(max(atr_pct * 1.5, 0.0075), 0.04)
@@ -473,7 +485,6 @@ def make_signal(features, weather_score: float = 0.0):
 
     confidence = base_conf + conf_adj_trend - ratio_penalty
 
-    # weather nudges
     if weather_score != 0.0:
         if direction == "UP":
             confidence += weather_score
@@ -494,7 +505,6 @@ def make_signal(features, weather_score: float = 0.0):
         stop_loss = last_price * (1 - stop_pct)
         take_profit = last_price * (1 + tp_pct)
 
-    # Rough ETA (hours) using ATR(14) as "typical 1h move"
     dist_tp = abs(take_profit - last_price)
     dist_sl = abs(stop_loss - last_price)
     eta_tp_h = _eta_hours(dist_tp, atr_14 if (atr_14 and not math.isnan(atr_14)) else None)
@@ -539,7 +549,6 @@ def make_weekly_forecast(signal, features):
 
     for i, label in enumerate(days):
         day_conf = max(min(base_conf - 0.03 * i, 0.95), 0.35)
-
         if direction == "FLAT":
             bias = "CHOPPY"
         else:
@@ -560,23 +569,18 @@ def make_weekly_forecast(signal, features):
             note += " Volatility: relatively calm (for NatGas)."
 
         outlook.append(
-            {
-                "label": label,
-                "bias": bias,
-                "confidence": day_conf,
-                "trend_strength": trend_strength_score,
-                "note": note,
-            }
+            {"label": label, "bias": bias, "confidence": day_conf, "trend_strength": trend_strength_score, "note": note}
         )
-
     return outlook
 
 
 # ---------------------------------------------------------------------
-# FLASK ROUTE
+# ROUTE
 # ---------------------------------------------------------------------
 @app.route("/", methods=["GET", "POST"])
 def index():
+    force_refresh = request.args.get("refresh", "0") == "1"
+
     account_balance = None
     risk_pct = 1.0
     position_size = None
@@ -594,7 +598,7 @@ def index():
     chart_data = None
     chart_error = None
 
-    feats, data_error = get_latest_features_cached()
+    feats, data_error = get_latest_features_cached(force_refresh=force_refresh)
     if data_error:
         error_msg = data_error
     else:
@@ -602,7 +606,7 @@ def index():
         last_price = feats["last_price"]
 
     weather_score = 0.0
-    weather_info, weather_error, ws = get_weather_summary_cached()
+    weather_info, weather_error, ws = get_weather_summary_cached(force_refresh=force_refresh)
     weather_score = ws
 
     if feats is not None and error_msg is None:
@@ -610,7 +614,7 @@ def index():
         signal = make_signal(feats, weather_score)
         weekly_outlook = make_weekly_forecast(signal, feats)
 
-    chart_data, chart_error = get_chart_data_cached()
+    chart_data, chart_error = get_chart_data_cached(force_refresh=force_refresh)
 
     if request.method == "POST":
         try:
@@ -645,6 +649,7 @@ def index():
         cl_impact=cl_impact,
         chart_data_json=json.dumps(chart_data) if chart_data else None,
         chart_error=chart_error,
+        force_refresh=force_refresh,
     )
 
 
