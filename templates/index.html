@@ -4,15 +4,8 @@
     <meta charset="UTF-8">
     <title>NatGas Weekly Trend Bot</title>
 
-    <!-- PWA basics -->
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#020617">
-    <link rel="manifest" href="/static/manifest.json">
-
-    <!-- iOS support -->
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="NatGas Bot">
+    <!-- Chart.js (browser-only, no Python install needed) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
     <style>
         :root {
@@ -26,7 +19,6 @@
             --green: #22c55e;
             --red: #ef4444;
             --yellow: #eab308;
-            --orange: #fb923c;
         }
         * { box-sizing: border-box; }
         body {
@@ -105,9 +97,6 @@
             background:rgba(148,163,184,0.2); color:var(--muted);
         }
         .pill-risk { background:rgba(234,179,8,0.18); color:var(--yellow); }
-        .pill-ok { background:rgba(34,197,94,0.14); color:#bbf7d0; border:1px solid rgba(34,197,94,0.4); }
-        .pill-warn { background:rgba(251,146,60,0.14); color:#fed7aa; border:1px solid rgba(251,146,60,0.35); }
-
         .big-number { font-size:1.8rem; font-weight:700; }
 
         .grid { display:grid; grid-template-columns:1fr; gap:16px; }
@@ -116,11 +105,11 @@
         }
 
         table {
-            width:100%; border-collapse:collapse; font-size:0.85rem; margin-top:6px;
+            width:100%; border-collapse:collapse; font-size:0.85rem; margin-top:4px;
         }
         th,td {
             border-bottom:1px solid rgba(31,41,55,0.9);
-            padding:7px 6px; text-align:left;
+            padding:6px 6px; text-align:left;
         }
         th { font-weight:600; color:var(--muted); font-size:0.8rem; }
         tr:last-child td { border-bottom:none; }
@@ -147,7 +136,7 @@
         button:hover { filter:brightness(1.05); }
 
         ul.small { padding-left:18px; }
-        .small { font-size:0.82rem; color:var(--muted); line-height:1.35; }
+        .small { font-size:0.8rem; color:var(--muted); }
 
         .split-line {
             height:1px;
@@ -158,26 +147,49 @@
         .weekly-bias-down { color:var(--red); font-weight:600; }
         .weekly-bias-choppy { color:var(--muted); font-weight:600; }
 
-        .hint-row {
-            display:flex; flex-wrap:wrap; gap:8px; align-items:center;
-            margin-top:6px;
-        }
-
-        details {
+        /* --- METERS --- */
+        .meters {
+            display:grid;
+            grid-template-columns:1fr;
+            gap:10px;
             margin-top:10px;
-            border:1px solid rgba(148,163,184,0.15);
+        }
+        @media (min-width:880px){
+            .meters { grid-template-columns:1fr 1fr; }
+        }
+        .meter-card {
+            background:rgba(2,6,23,0.35);
+            border:1px solid rgba(148,163,184,0.14);
             border-radius:12px;
             padding:10px 12px;
-            background:rgba(2,6,23,0.35);
         }
-        summary {
-            cursor:pointer;
-            font-weight:600;
-            color:var(--text);
+        .meter-top {
+            display:flex; align-items:center; justify-content:space-between;
+            gap:10px; margin-bottom:6px;
         }
-        summary::marker { color:var(--accent); }
+        .meter-title { font-weight:650; font-size:0.9rem; }
+        .meter-value { color:highlight; color:var(--accent); font-weight:650; }
+        .bar {
+            height:10px;
+            border-radius:999px;
+            background:rgba(148,163,184,0.15);
+            overflow:hidden;
+        }
+        .bar > div {
+            height:100%;
+            width:0%;
+            background:linear-gradient(90deg,#38bdf8,#22c55e);
+        }
+        .bar.red > div { background:linear-gradient(90deg,#ef4444,#eab308); }
+        .bar.gray > div { background:linear-gradient(90deg,#94a3b8,#e5e7eb); }
+
+        /* Charts */
+        .chart-box { margin-top:12px; }
+        canvas { width:100% !important; height:320px !important; }
+        .chart-note { margin-top:6px; font-size:0.8rem; color:var(--muted); }
     </style>
 </head>
+
 <body>
 <div class="page">
     <header>
@@ -187,7 +199,7 @@
                 <span class="title-pill">Trend signal + week outlook</span>
             </h1>
             <div class="title-sub">
-                Main focus: BUY / SELL / NO TRADE signal, with a projected bias for the rest of the trading week.
+                Main focus: BUY / SELL / NO TRADE signal, with meters + graphs for clarity.
             </div>
         </div>
         <div class="timestamp">
@@ -234,6 +246,61 @@
                 </p>
             {% endif %}
 
+            {% if weather_info %}
+                <p class="small">{{ weather_info.impact_text }}</p>
+            {% endif %}
+
+            {% if cl_impact %}
+                <p class="small">
+                    Crude oil: {{ cl_impact.trend_label }}
+                    ({{ cl_impact.cl_ret_3d_pct | round(2) }}% over 3 days).<br>
+                    {{ cl_impact.impact_text }}
+                </p>
+            {% endif %}
+
+            <!-- METERS -->
+            <div class="meters">
+                <div class="meter-card">
+                    <div class="meter-top">
+                        <div class="meter-title">Confidence meter</div>
+                        <div class="meter-value">{{ (signal.confidence * 100) | round(1) }}%</div>
+                    </div>
+                    <div class="bar"><div id="m_conf"></div></div>
+                    <div class="chart-note">Higher = stronger edge (still not guaranteed).</div>
+                </div>
+
+                <div class="meter-card">
+                    <div class="meter-top">
+                        <div class="meter-title">Trend strength</div>
+                        <div class="meter-value">{{ signal.trend_strength | round(1) }}/100</div>
+                    </div>
+                    <div class="bar gray"><div id="m_trend"></div></div>
+                    <div class="chart-note">Measures how “separated” EMA10 vs EMA50 is.</div>
+                </div>
+
+                <div class="meter-card">
+                    <div class="meter-top">
+                        <div class="meter-title">Weather impact</div>
+                        <div class="meter-value">
+                            {% if weather_info %}{{ (weather_info.score * 100) | round(1) }}{% else %}0{% endif %}
+                        </div>
+                    </div>
+                    <div class="bar"><div id="m_weather"></div></div>
+                    <div class="chart-note">Positive = demand supportive. Negative = mild temps.</div>
+                </div>
+
+                <div class="meter-card">
+                    <div class="meter-top">
+                        <div class="meter-title">Crude impact</div>
+                        <div class="meter-value">
+                            {% if cl_impact %}{{ (cl_impact.score * 100) | round(1) }}{% else %}0{% endif %}
+                        </div>
+                    </div>
+                    <div class="bar red"><div id="m_crude"></div></div>
+                    <div class="chart-note">Spread logic (NatGas cheap/expensive vs crude).</div>
+                </div>
+            </div>
+
             <div class="split-line"></div>
 
             <p>
@@ -250,85 +317,33 @@
         {% endif %}
     </div>
 
-    <!-- SUPPLY / DEMAND (FUNDAMENTALS) -->
-    <div class="card-soft" style="margin-top:12px;">
-        <h2><span class="dot"></span> Supply / demand view</h2>
+    <!-- GRAPHS -->
+    <div class="card-soft chart-box">
+        <h2><span class="dot"></span> Graphs (last ~7 days, hourly)</h2>
 
-        <p class="small">
-            This section explains the “why” behind the signal (weather demand + crude context).
-            LNG / Storage / Henry Hub will show here once we connect free sources.
-        </p>
-
-        <div class="hint-row">
-            {% if weather_info %}
-                <span class="pill pill-ok">Weather included</span>
-            {% else %}
-                <span class="pill pill-warn">Weather not available</span>
-            {% endif %}
-
-            {% if cl_impact %}
-                <span class="pill pill-ok">Crude context included</span>
-            {% else %}
-                <span class="pill pill-warn">Crude context not available</span>
-            {% endif %}
-
-            <span class="pill">LNG: coming soon</span>
-            <span class="pill">EIA Storage: coming soon</span>
-            <span class="pill">Henry Hub spot: coming soon</span>
-            <span class="pill">EU storage: coming soon</span>
-        </div>
-
-        {% if weather_info %}
-            <div class="split-line"></div>
-            <p>
-                <span class="label">Demand proxy (weather):</span><br>
-                Avg HDD (7d): <span style="color:var(--accent); font-weight:600;">{{ weather_info.avg_hdd | round(1) }}</span> ·
-                Avg CDD (7d): <span style="color:var(--accent); font-weight:600;">{{ weather_info.avg_cdd | round(1) }}</span>
-            </p>
-            <p class="small">{{ weather_info.impact_text }}</p>
-
-            <details>
-                <summary>Show regional weather breakdown (US + Europe)</summary>
-                <table>
-                    <tr>
-                        <th>Region</th>
-                        <th>Now (°C)</th>
-                        <th>HDD 7d</th>
-                        <th>CDD 7d</th>
-                        <th>Meaning</th>
-                    </tr>
-                    {% for loc in weather_info.locations %}
-                        <tr>
-                            <td>{{ loc.name }}</td>
-                            <td>
-                                {% if loc.temp is not none %}
-                                    {{ loc.temp | round(1) }}
-                                {% else %}
-                                    —
-                                {% endif %}
-                            </td>
-                            <td>{{ loc.hdd7 | round(0) }}</td>
-                            <td>{{ loc.cdd7 | round(0) }}</td>
-                            <td class="small">
-                                HDD = heating demand (cold → bullish). CDD = cooling demand (hot → bullish).
-                            </td>
-                        </tr>
-                    {% endfor %}
-                </table>
-            </details>
-        {% else %}
-            <div class="split-line"></div>
-            <p class="small">Weather data not available right now.</p>
+        {% if chart_error %}
+            <p class="small">Chart error: {{ chart_error }}</p>
         {% endif %}
 
-        {% if cl_impact %}
+        {% if chart_data_json %}
+            <p class="small">Use these graphs to “see” why the bot says BUY/SELL/NO TRADE.</p>
+
             <div class="split-line"></div>
-            <p>
-                <span class="label">Crude oil context:</span><br>
-                Crude trend: <span style="color:var(--accent); font-weight:600;">{{ cl_impact.trend_label }}</span>
-                ({{ cl_impact.cl_ret_3d_pct | round(2) }}% over 3 days)
-            </p>
-            <p class="small">{{ cl_impact.impact_text }}</p>
+
+            <h3 style="margin:0 0 6px; font-size:1rem;">Price + EMA10/30/50</h3>
+            <canvas id="chartPrice"></canvas>
+
+            <h3 style="margin:14px 0 6px; font-size:1rem;">RSI (14)</h3>
+            <canvas id="chartRSI"></canvas>
+
+            <h3 style="margin:14px 0 6px; font-size:1rem;">MACD histogram</h3>
+            <canvas id="chartMACD"></canvas>
+
+            <h3 style="margin:14px 0 6px; font-size:1rem;">NG/CL ratio z-score</h3>
+            <canvas id="chartRatio"></canvas>
+
+        {% else %}
+            <p class="small">Charts not available yet.</p>
         {% endif %}
     </div>
 
@@ -400,7 +415,7 @@
                 <p>
                     <span class="label">NG / CL ratio z-score:</span>
                     {{ feats.ng_cl_ratio_z | round(2) }}
-                    <span class="small">(how cheap / expensive NatGas is vs crude over recent history)</span>
+                    <span class="small">(cheap/expensive NatGas vs crude over recent history)</span>
                 </p>
             {% else %}
                 <p>No indicators available.</p>
@@ -437,26 +452,125 @@
                 You still choose your actual lot size / leverage on Trading212 or any broker.
             </p>
 
-            <p class="small" style="margin-top:6px;">
-                How to use:
-            </p>
+            <p class="small" style="margin-top:6px;">How to use:</p>
             <ul class="small">
                 <li>Use the <b>Main trend signal</b> for direction (BUY / SELL / NO TRADE).</li>
-                <li>Use the <b>Supply / demand view</b> to understand what’s driving it.</li>
-                <li>Use the <b>Weekly outlook</b> to decide scalp vs swing.</li>
+                <li>Use the <b>Meters</b> to understand why the bot is confident or not.</li>
+                <li>Use the <b>Graphs</b> to visually confirm the trend and momentum.</li>
             </ul>
         </div>
     </div>
 </div>
 
-<!-- PWA Service Worker -->
+{% if signal %}
 <script>
-if ("serviceWorker" in navigator) {
-    window.addEventListener("load", function () {
-        navigator.serviceWorker.register("/static/service-worker.js").catch(() => {});
-    });
-}
-</script>
+    // ----- Meter fill -----
+    const conf = {{ (signal.confidence * 100) | round(1) }};
+    const trend = {{ signal.trend_strength | round(1) }};
+    const weather = {% if weather_info %}{{ (weather_info.score * 100) | round(1) }}{% else %}0{% endif %};
+    const crude = {% if cl_impact %}{{ (cl_impact.score * 100) | round(1) }}{% else %}0{% endif %};
 
+    document.getElementById("m_conf").style.width = Math.max(0, Math.min(conf, 100)) + "%";
+    document.getElementById("m_trend").style.width = Math.max(0, Math.min(trend, 100)) + "%";
+
+    // Weather/crude can be negative, map -25..+25 (approx) into 0..100
+    const mapSigned = (x, min, max) => {
+        const v = (x - min) / (max - min);
+        return Math.max(0, Math.min(v * 100, 100));
+    };
+
+    document.getElementById("m_weather").style.width = mapSigned(weather, -25, 25) + "%";
+    document.getElementById("m_crude").style.width = mapSigned(crude, -25, 25) + "%";
+</script>
+{% endif %}
+
+{% if chart_data_json %}
+<script>
+    const CH = {{ chart_data_json | safe }};
+
+    const labels = CH.labels;
+
+    // Price + EMAs
+    new Chart(document.getElementById('chartPrice'), {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [
+                { label: 'NG Close', data: CH.ng_close, tension: 0.15 },
+                { label: 'EMA 10', data: CH.ema10, tension: 0.15 },
+                { label: 'EMA 30', data: CH.ema30, tension: 0.15 },
+                { label: 'EMA 50', data: CH.ema50, tension: 0.15 },
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: { legend: { display: true } },
+            scales: {
+                x: { ticks: { maxTicksLimit: 10 } }
+            }
+        }
+    });
+
+    // RSI
+    new Chart(document.getElementById('chartRSI'), {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [
+                { label: 'RSI 14', data: CH.rsi14, tension: 0.15 }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: true } },
+            scales: {
+                y: { suggestedMin: 0, suggestedMax: 100 },
+                x: { ticks: { maxTicksLimit: 10 } }
+            }
+        }
+    });
+
+    // MACD histogram
+    new Chart(document.getElementById('chartMACD'), {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [
+                { label: 'MACD Hist', data: CH.macd_hist }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: true } },
+            scales: {
+                x: { ticks: { maxTicksLimit: 10 } }
+            }
+        }
+    });
+
+    // Ratio z-score
+    new Chart(document.getElementById('chartRatio'), {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [
+                { label: 'NG/CL Ratio Z', data: CH.ratio_z, tension: 0.15 }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: true } },
+            scales: {
+                x: { ticks: { maxTicksLimit: 10 } }
+            }
+        }
+    });
+</script>
+{% endif %}
 </body>
 </html>
