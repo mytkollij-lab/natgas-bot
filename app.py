@@ -30,14 +30,13 @@ WEATHER_LOCATIONS = [
     {"name": "Italy (Milan)", "lat": 45.46, "lon": 9.19},
 ]
 
-
 # ---------------------------------------------------------------------
 # WEATHER HELPERS
 # ---------------------------------------------------------------------
 def fetch_weather_for_location(lat: float, lon: float):
     """
-    Use Open-Meteo free API to get next 7 days of hourly temperature.
-    Returns: (current_temp, HDD_7d, CDD_7d) with base 18°C.
+    Open-Meteo free API, next 7 days hourly temperature.
+    Returns: (current_temp, HDD_7d, CDD_7d) base 18°C.
     """
     base_temp = 18.0
     url = (
@@ -144,7 +143,7 @@ def get_weather_summary_cached():
 
 
 # ---------------------------------------------------------------------
-# SIMPLE INDICATORS
+# INDICATORS
 # ---------------------------------------------------------------------
 def ema(series: pd.Series, window: int) -> pd.Series:
     return series.ewm(span=window, adjust=False).mean()
@@ -190,9 +189,6 @@ def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
 # MARKET DATA + FEATURES
 # ---------------------------------------------------------------------
 def get_latest_features_fresh():
-    """
-    Download about 60 days of hourly NG + CL data and calculate indicators.
-    """
     try:
         ng = yf.download("NG=F", period="60d", interval="1h", progress=False, threads=False)
         cl = yf.download("CL=F", period="60d", interval="1h", progress=False, threads=False)
@@ -217,42 +213,34 @@ def get_latest_features_fresh():
         low = df["ng_low"]
         cl_close = df["cl_close"]
 
-        # EMAs
         df["ema_fast"] = ema(close, 10)
         df["ema_slow"] = ema(close, 30)
         df["ema_long"] = ema(close, 50)
 
-        # RSI
         df["rsi"] = rsi(close, 14)
 
-        # Volatility (24h std of 1h returns)
         df["ret_1h"] = close.pct_change(1)
         df["volatility_24h"] = df["ret_1h"].rolling(24).std()
 
-        # ATR
         df["atr_14"] = atr(high, low, close, 14)
 
-        # Bollinger
         mid, upper, lower = bollinger_bands(close, 20, 2.0)
         df["bb_mid"] = mid
         df["bb_upper"] = upper
         df["bb_lower"] = lower
         df["bb_pos"] = (close - lower) / (upper - lower + 1e-9)
 
-        # MACD
         macd_line, signal_line, hist = macd(close, 12, 26, 9)
         df["macd_line"] = macd_line
         df["macd_signal"] = signal_line
         df["macd_hist"] = hist
 
-        # NG/CL ratio
         df["ng_cl_ratio"] = close / cl_close
         ratio = df["ng_cl_ratio"]
         ratio_ma = ratio.rolling(50).mean()
         ratio_std = ratio.rolling(50).std()
         df["ng_cl_ratio_z"] = (ratio - ratio_ma) / (ratio_std + 1e-9)
 
-        # crude 3-day return
         df["cl_ret_3d"] = cl_close.pct_change(72)  # 72 hours ≈ 3 days
 
         df = df.dropna()
@@ -305,9 +293,6 @@ def get_latest_features_cached():
 # CHART DATA (graphs)
 # ---------------------------------------------------------------------
 def get_chart_data_fresh():
-    """
-    Light-weight chart dataset (last ~7 days hourly) for NG & CL with indicators.
-    """
     try:
         ng = yf.download("NG=F", period="10d", interval="1h", progress=False, threads=False)
         cl = yf.download("CL=F", period="10d", interval="1h", progress=False, threads=False)
@@ -324,7 +309,6 @@ def get_chart_data_fresh():
         if df.empty:
             return None, "Chart data empty after cleaning."
 
-        # Indicators on chart data
         df["ema10"] = ema(df["ng_close"], 10)
         df["ema30"] = ema(df["ng_close"], 30)
         df["ema50"] = ema(df["ng_close"], 50)
@@ -342,14 +326,12 @@ def get_chart_data_fresh():
         if df.empty:
             return None, "Not enough chart candles after indicator warm-up."
 
-        # Keep last ~7 days worth of hourly data (approx 168 points)
-        df = df.tail(180)
+        df = df.tail(180)  # ~7 days hourly
 
-        # Labels as UTC-ish strings
         labels = []
         for ts in df.index:
             try:
-                labels.append(ts.tz_convert("UTC").strftime("%m-%d %H:%M"))
+                labels.append(ts.tz_convert("UTC").strftime("%Y-%m-%d %H:%M"))
             except Exception:
                 labels.append(str(ts))
 
@@ -382,7 +364,7 @@ def get_chart_data_cached():
 
 
 # ---------------------------------------------------------------------
-# CRUDE OIL IMPACT TEXT + METER SCORE
+# CRUDE OIL IMPACT TEXT + SCORE
 # ---------------------------------------------------------------------
 def compute_crude_impact(features):
     ratio_z = features.get("ng_cl_ratio_z", 0.0)
@@ -420,13 +402,25 @@ def compute_crude_impact(features):
         "cl_ret_3d_pct": cl_ret_pct,
         "trend_label": trend_label,
         "impact_text": impact_text,
-        "score": crude_score,  # for the meter
+        "score": crude_score,
     }
 
 
 # ---------------------------------------------------------------------
-# SIGNAL LOGIC (BUY / SELL / FLAT)
+# SIGNAL LOGIC (BUY / SELL / FLAT) + ETA (rough)
 # ---------------------------------------------------------------------
+def _eta_hours(distance: float, atr_per_hour: float):
+    """
+    Rough ETA in hours using ATR as average 1-hour movement.
+    This is NOT a prediction, only a rough "time scale".
+    """
+    if atr_per_hour is None or atr_per_hour <= 0 or distance <= 0:
+        return None
+    hours = distance / atr_per_hour
+    # clamp to avoid silly numbers
+    return float(max(0.5, min(hours, 240)))
+
+
 def make_signal(features, weather_score: float = 0.0):
     last_price = features["last_price"]
     ema_fast_val = features["ema_fast"]
@@ -500,6 +494,12 @@ def make_signal(features, weather_score: float = 0.0):
         stop_loss = last_price * (1 - stop_pct)
         take_profit = last_price * (1 + tp_pct)
 
+    # Rough ETA (hours) using ATR(14) as "typical 1h move"
+    dist_tp = abs(take_profit - last_price)
+    dist_sl = abs(stop_loss - last_price)
+    eta_tp_h = _eta_hours(dist_tp, atr_14 if (atr_14 and not math.isnan(atr_14)) else None)
+    eta_sl_h = _eta_hours(dist_sl, atr_14 if (atr_14 and not math.isnan(atr_14)) else None)
+
     return {
         "direction": direction,
         "confidence": confidence,
@@ -508,12 +508,14 @@ def make_signal(features, weather_score: float = 0.0):
         "stop_loss": stop_loss,
         "take_profit": take_profit,
         "weather_score": weather_score,
-        "trend_strength": float(min(max(trend_strength * 100, 0), 100)),  # 0..100 meter
+        "trend_strength": float(min(max(trend_strength * 100, 0), 100)),
+        "eta_tp_hours": eta_tp_h,
+        "eta_sl_hours": eta_sl_h,
     }
 
 
 # ---------------------------------------------------------------------
-# WEEKLY OUTLOOK (projection)
+# WEEKLY OUTLOOK
 # ---------------------------------------------------------------------
 def make_weekly_forecast(signal, features):
     if not signal or not features:
@@ -592,7 +594,6 @@ def index():
     chart_data = None
     chart_error = None
 
-    # 1) Market data
     feats, data_error = get_latest_features_cached()
     if data_error:
         error_msg = data_error
@@ -600,21 +601,17 @@ def index():
         timestamp = feats["timestamp"]
         last_price = feats["last_price"]
 
-    # 2) Weather
     weather_score = 0.0
     weather_info, weather_error, ws = get_weather_summary_cached()
     weather_score = ws
 
-    # 3) Signal & outlook
     if feats is not None and error_msg is None:
         cl_impact = compute_crude_impact(feats)
         signal = make_signal(feats, weather_score)
         weekly_outlook = make_weekly_forecast(signal, feats)
 
-    # 4) Charts
     chart_data, chart_error = get_chart_data_cached()
 
-    # 5) Position sizing
     if request.method == "POST":
         try:
             account_balance = float(request.form.get("account_balance", "0"))
