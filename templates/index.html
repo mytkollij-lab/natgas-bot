@@ -4,11 +4,7 @@
     <meta charset="UTF-8">
     <title>NatGas Weekly Trend Bot</title>
 
-    <!-- Chart.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
-
-    <!-- Financial Candlesticks plugin for Chart.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-financial@3.3.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
     <style>
         :root {
@@ -47,18 +43,11 @@
         .timestamp { font-size:0.85rem; color:var(--muted); text-align:right; }
         .timestamp span { color:var(--accent); }
 
-        .top-actions {
-            display:flex;
-            gap:10px;
-            align-items:center;
-            justify-content:flex-end;
-            flex-wrap:wrap;
-            margin-top:8px;
+        .top-actions{
+            display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap;
         }
-        .btn-link {
-            display:inline-flex;
-            align-items:center;
-            gap:8px;
+        .btn-link{
+            display:inline-flex; align-items:center; gap:8px;
             padding:8px 14px;
             border-radius:999px;
             border:1px solid rgba(56,189,248,0.45);
@@ -68,8 +57,7 @@
             font-weight:650;
             cursor:pointer;
         }
-        .btn-link:hover { filter:brightness(1.06); }
-        .tiny { font-size:0.78rem; color:var(--muted); }
+        .btn-link:hover{ filter:brightness(1.06); }
 
         .card,.card-soft {
             border-radius:14px; padding:14px 14px 16px;
@@ -163,18 +151,26 @@
             margin:8px 0 10px;
         }
 
-        /* Candlestick chart area */
-        .big-chart {
-            margin-top:12px;
-            padding:12px;
-            border-radius:14px;
+        /* --- METERS --- */
+        .meters { display:grid; grid-template-columns:1fr; gap:10px; margin-top:10px; }
+        @media (min-width:880px){ .meters { grid-template-columns:1fr 1fr; } }
+        .meter-card {
+            background:rgba(2,6,23,0.35);
             border:1px solid rgba(148,163,184,0.14);
-            background:rgba(2,6,23,0.25);
+            border-radius:12px;
+            padding:10px 12px;
         }
-        .big-chart canvas { width:100% !important; height:420px !important; }
+        .meter-top { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:6px; }
+        .meter-title { font-weight:650; font-size:0.9rem; }
+        .meter-value { color:var(--accent); font-weight:650; }
+        .bar { height:10px; border-radius:999px; background:rgba(148,163,184,0.15); overflow:hidden; }
+        .bar > div { height:100%; width:0%; background:linear-gradient(90deg,#38bdf8,#22c55e); }
+        .bar.red > div { background:linear-gradient(90deg,#ef4444,#eab308); }
+        .bar.gray > div { background:linear-gradient(90deg,#94a3b8,#e5e7eb); }
 
-        /* Smaller charts */
-        .chart-grid { display:grid; grid-template-columns:1fr; gap:14px; margin-top:14px; }
+        /* Charts */
+        .chart-box { margin-top:12px; }
+        .chart-grid { display:grid; grid-template-columns:1fr; gap:14px; }
         @media (min-width:880px){ .chart-grid { grid-template-columns:1fr 1fr; } }
         .chart-card {
             background:rgba(2,6,23,0.25);
@@ -184,7 +180,9 @@
         }
         .chart-title { margin:0; font-size:0.98rem; }
         .chart-explain { margin:4px 0 8px; font-size:0.82rem; color:var(--muted); line-height:1.35; }
-        .chart-card canvas { width:100% !important; height:220px !important; }
+
+        /* IMPORTANT: give charts a height so they actually show */
+        .chart-card canvas { width:100% !important; height:240px !important; }
     </style>
 </head>
 
@@ -194,21 +192,19 @@
         <div class="title-block">
             <h1>
                 NatGas Weekly Trend Bot
-                <span class="title-pill">Candles + TP/SL overlay</span>
+                <span class="title-pill">Trend signal + week outlook</span>
             </h1>
             <div class="title-sub">
-                Main focus: BUY/SELL/NO TRADE + full NatGas candle chart with your TP/SL drawn on it.
+                Main focus: BUY / SELL / NO TRADE signal, with smaller graphs + clearer hover info.
             </div>
 
             <div class="top-actions">
                 <a class="btn-link" href="/?refresh=1">🔄 Refresh now</a>
-                <div class="tiny">
-                    {% if force_refresh %}
-                        Forced refresh used ✅
-                    {% else %}
-                        Normal mode (cache up to 5 min)
-                    {% endif %}
-                </div>
+                {% if force_refresh %}
+                    <span class="small">Forced refresh ✅</span>
+                {% else %}
+                    <span class="small">Cache up to 5 min</span>
+                {% endif %}
             </div>
         </div>
 
@@ -256,6 +252,61 @@
                 </p>
             {% endif %}
 
+            {% if weather_info %}
+                <p class="small">{{ weather_info.impact_text }}</p>
+            {% endif %}
+
+            {% if cl_impact %}
+                <p class="small">
+                    Crude oil: {{ cl_impact.trend_label }}
+                    ({{ cl_impact.cl_ret_3d_pct | round(2) }}% over 3 days).<br>
+                    {{ cl_impact.impact_text }}
+                </p>
+            {% endif %}
+
+            <!-- METERS -->
+            <div class="meters">
+                <div class="meter-card">
+                    <div class="meter-top">
+                        <div class="meter-title">Confidence meter</div>
+                        <div class="meter-value">{{ (signal.confidence * 100) | round(1) }}%</div>
+                    </div>
+                    <div class="bar"><div id="m_conf"></div></div>
+                    <div class="small">Higher = stronger edge (still not guaranteed).</div>
+                </div>
+
+                <div class="meter-card">
+                    <div class="meter-top">
+                        <div class="meter-title">Trend strength</div>
+                        <div class="meter-value">{{ signal.trend_strength | round(1) }}/100</div>
+                    </div>
+                    <div class="bar gray"><div id="m_trend"></div></div>
+                    <div class="small">How separated EMA10 vs EMA50 is (stronger trend = bigger separation).</div>
+                </div>
+
+                <div class="meter-card">
+                    <div class="meter-top">
+                        <div class="meter-title">Weather impact</div>
+                        <div class="meter-value">
+                            {% if weather_info %}{{ (weather_info.score * 100) | round(1) }}{% else %}0{% endif %}
+                        </div>
+                    </div>
+                    <div class="bar"><div id="m_weather"></div></div>
+                    <div class="small">Positive = demand supportive. Negative = mild temps.</div>
+                </div>
+
+                <div class="meter-card">
+                    <div class="meter-top">
+                        <div class="meter-title">Crude impact</div>
+                        <div class="meter-value">
+                            {% if cl_impact %}{{ (cl_impact.score * 100) | round(1) }}{% else %}0{% endif %}
+                        </div>
+                    </div>
+                    <div class="bar red"><div id="m_crude"></div></div>
+                    <div class="small">Spread logic (NatGas cheap/expensive vs crude).</div>
+                </div>
+            </div>
+
             <div class="split-line"></div>
 
             <p>
@@ -264,66 +315,101 @@
             </p>
 
             <p class="small">
-                Rough time-scale (ATR-based, not guaranteed):<br>
-                TP: {% if signal.eta_tp_hours %}~{{ signal.eta_tp_hours | round(1) }}h{% else %}n/a{% endif %} ·
-                SL: {% if signal.eta_sl_hours %}~{{ signal.eta_sl_hours | round(1) }}h{% else %}n/a{% endif %}
+                Stop distance: {{ (signal.stop_pct * 100) | round(2) }}% ·
+                TP distance: {{ (signal.tp_pct * 100) | round(2) }}%
             </p>
+
+            <div class="split-line"></div>
+
+            <p>
+                <span class="label">Rough ETA (NOT guaranteed):</span><br>
+                TP time-scale: {% if signal.eta_tp_hours %}~{{ signal.eta_tp_hours | round(1) }}h{% else %}n/a{% endif %}<br>
+                SL time-scale: {% if signal.eta_sl_hours %}~{{ signal.eta_sl_hours | round(1) }}h{% else %}n/a{% endif %}
+            </p>
+
         {% else %}
             <p>No signal available right now.</p>
         {% endif %}
     </div>
 
-    <!-- BIG CANDLE CHART -->
-    <div class="card-soft big-chart">
-        <h2><span class="dot"></span> NatGas candlestick chart (with TP/SL)</h2>
+    <!-- GRAPHS -->
+    <div class="card-soft chart-box">
+        <h2><span class="dot"></span> Graphs (smaller, clearer)</h2>
 
         {% if chart_error %}
             <p class="small">Chart error: {{ chart_error }}</p>
         {% endif %}
 
-        <p class="small">
-            What you’re looking at:
-            candles = full OHLC price.
-            EMA10/30/50 = trend lines.
-            TP/SL lines = your levels drawn on the chart.
-            Hover a candle → see exact open/high/low/close + date/time.
-        </p>
-
-        <canvas id="chartCandles"></canvas>
-    </div>
-
-    <!-- SMALLER CHARTS -->
-    <div class="card-soft" style="margin-top:14px;">
-        <h2><span class="dot"></span> Extra charts (quick confirmation)</h2>
-
         {% if chart_data_json %}
             <div class="chart-grid">
                 <div class="chart-card">
-                    <p class="chart-title"><b>RSI (14)</b></p>
+                    <p class="chart-title"><b>1) Price + EMA10/30/50</b></p>
                     <p class="chart-explain">
-                        Above ~70 = often overbought (can pull back). Below ~30 = often oversold (can bounce).
+                        EMA10 above EMA30 above EMA50 = bullish trend. Crossed/tangled = choppy.
+                    </p>
+                    <canvas id="chartPrice"></canvas>
+                </div>
+
+                <div class="chart-card">
+                    <p class="chart-title"><b>2) RSI (14)</b></p>
+                    <p class="chart-explain">
+                        RSI > 70 often overbought. RSI < 30 often oversold.
                     </p>
                     <canvas id="chartRSI"></canvas>
                 </div>
 
                 <div class="chart-card">
-                    <p class="chart-title"><b>MACD Histogram</b></p>
+                    <p class="chart-title"><b>3) MACD Histogram</b></p>
                     <p class="chart-explain">
-                        Above 0 = bullish momentum. Below 0 = bearish momentum. Bigger bars = stronger momentum.
+                        Above 0 = bullish momentum. Below 0 = bearish momentum.
                     </p>
                     <canvas id="chartMACD"></canvas>
                 </div>
 
                 <div class="chart-card">
-                    <p class="chart-title"><b>NG/CL Ratio Z-Score</b></p>
+                    <p class="chart-title"><b>4) NG/CL Ratio Z-Score</b></p>
                     <p class="chart-explain">
-                        Positive = NatGas expensive vs crude. Negative = NatGas cheap vs crude.
+                        Positive = NG expensive vs crude. Negative = NG cheap vs crude.
                     </p>
                     <canvas id="chartRatio"></canvas>
                 </div>
             </div>
         {% else %}
-            <p class="small">Charts not available yet.</p>
+            <p class="small">Charts not available yet (no chart data returned).</p>
+        {% endif %}
+    </div>
+
+    <!-- WEEKLY OUTLOOK -->
+    <div class="card-soft" style="margin-top:12px;">
+        <h2><span class="dot"></span> Weekly outlook (projection)</h2>
+
+        {% if weekly_outlook and signal %}
+            <table>
+                <tr>
+                    <th>Period</th>
+                    <th>Bias</th>
+                    <th>Conf.</th>
+                    <th>Comment</th>
+                </tr>
+                {% for day in weekly_outlook %}
+                    <tr>
+                        <td>{{ day.label }}</td>
+                        <td>
+                            {% if day.bias == "UP" %}
+                                <span class="weekly-bias-up">UP / Bullish</span>
+                            {% elif day.bias == "DOWN" %}
+                                <span class="weekly-bias-down">DOWN / Bearish</span>
+                            {% else %}
+                                <span class="weekly-bias-choppy">CHOPPY / RANGE</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ (day.confidence * 100) | round(1) }}%</td>
+                        <td class="small">{{ day.note }}</td>
+                    </tr>
+                {% endfor %}
+            </table>
+        {% else %}
+            <p>No weekly outlook available.</p>
         {% endif %}
     </div>
 
@@ -353,206 +439,107 @@
                     </span>
                 </p>
             {% endif %}
-            <p class="small">
-                Position size = (account × risk%) ÷ stop distance.
-            </p>
         </div>
 
         <div class="card-soft">
             <h2><span class="dot"></span> Notes</h2>
             <p class="small">
-                This is a helper. NatGas can move fast on weather + EIA + headlines.
+                If charts disappear: press “Refresh now” to force new chart fetch.
             </p>
         </div>
     </div>
 </div>
 
-{% if chart_data_json and signal %}
+{% if signal %}
+<script>
+    const conf = {{ (signal.confidence * 100) | round(1) }};
+    const trend = {{ signal.trend_strength | round(1) }};
+    const weather = {% if weather_info %}{{ (weather_info.score * 100) | round(1) }}{% else %}0{% endif %};
+    const crude = {% if cl_impact %}{{ (cl_impact.score * 100) | round(1) }}{% else %}0{% endif %};
+
+    document.getElementById("m_conf").style.width = Math.max(0, Math.min(conf, 100)) + "%";
+    document.getElementById("m_trend").style.width = Math.max(0, Math.min(trend, 100)) + "%";
+
+    const mapSigned = (x, min, max) => {
+        const v = (x - min) / (max - min);
+        return Math.max(0, Math.min(v * 100, 100));
+    };
+    document.getElementById("m_weather").style.width = mapSigned(weather, -25, 25) + "%";
+    document.getElementById("m_crude").style.width = mapSigned(crude, -25, 25) + "%";
+</script>
+{% endif %}
+
+{% if chart_data_json %}
 <script>
     const CH = {{ chart_data_json | safe }};
     const labels = CH.labels;
 
-    const TP = {{ signal.take_profit | round(6) }};
-    const SL = {{ signal.stop_loss | round(6) }};
-
-    const fmt = (v, d=4) => {
+    const fmt = (v, decimals=4) => {
         if (v === null || v === undefined || Number.isNaN(v)) return "n/a";
-        return Number(v).toFixed(d);
+        return Number(v).toFixed(decimals);
     };
 
-    // -------------------------------
-    // 1) BIG Candlestick chart
-    // -------------------------------
-    const candleCtx = document.getElementById("chartCandles");
-
-    // Horizontal lines (TP/SL) as line datasets:
-    const tpLine = labels.map(() => TP);
-    const slLine = labels.map(() => SL);
-
-    new Chart(candleCtx, {
-        type: "candlestick",
-        data: {
-            datasets: [
-                {
-                    label: "NatGas Candles (OHLC)",
-                    data: CH.candles,
-                },
-                {
-                    type: "line",
-                    label: "EMA 10",
-                    data: CH.ema10.map((y, i) => ({x: labels[i], y})),
-                    pointRadius: 0,
-                    borderWidth: 1.5,
-                    tension: 0.15
-                },
-                {
-                    type: "line",
-                    label: "EMA 30",
-                    data: CH.ema30.map((y, i) => ({x: labels[i], y})),
-                    pointRadius: 0,
-                    borderWidth: 1.5,
-                    tension: 0.15
-                },
-                {
-                    type: "line",
-                    label: "EMA 50",
-                    data: CH.ema50.map((y, i) => ({x: labels[i], y})),
-                    pointRadius: 0,
-                    borderWidth: 1.5,
-                    tension: 0.15
-                },
-                {
-                    type: "line",
-                    label: "Take Profit (TP)",
-                    data: tpLine.map((y, i) => ({x: labels[i], y})),
-                    pointRadius: 0,
-                    borderWidth: 2,
-                    borderDash: [6, 6],
-                },
-                {
-                    type: "line",
-                    label: "Stop Loss (SL)",
-                    data: slLine.map((y, i) => ({x: labels[i], y})),
-                    pointRadius: 0,
-                    borderWidth: 2,
-                    borderDash: [6, 6],
-                }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            interaction: { mode: "index", intersect: false },
-            plugins: {
-                tooltip: {
-                    callbacks: {
-                        title: (items) => items?.length ? ("UTC: " + items[0].label) : "",
-                        label: (ctx) => {
-                            // Candlestick shows OHLC
-                            if (ctx.dataset.type === "candlestick" || ctx.chart.config.type === "candlestick") {
-                                const raw = ctx.raw;
-                                if (raw && raw.o !== undefined) {
-                                    return `O:${fmt(raw.o)} H:${fmt(raw.h)} L:${fmt(raw.l)} C:${fmt(raw.c)}`;
-                                }
-                            }
-                            // Lines
-                            const label = ctx.dataset.label || "";
-                            return `${label}: ${fmt(ctx.parsed.y, 4)}`;
-                        }
-                    }
-                },
-                legend: { display: true }
-            },
-            scales: {
-                x: {
-                    ticks: { maxTicksLimit: 7 }
-                }
-            }
-        }
-    });
-
-    // -------------------------------
-    // 2) RSI
-    // -------------------------------
-    new Chart(document.getElementById("chartRSI"), {
-        type: "line",
-        data: {
-            labels,
-            datasets: [
-                { label: "RSI 14", data: CH.rsi14, tension: 0.15, pointRadius: 0 }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            interaction: { mode: "index", intersect: false },
-            plugins: {
-                tooltip: {
-                    callbacks: {
-                        title: (items) => items?.length ? ("UTC: " + items[0].label) : "",
-                        label: (ctx) => `RSI 14: ${fmt(ctx.parsed.y, 2)}`
+    const commonOptions = {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+            tooltip: {
+                callbacks: {
+                    title: (items) => items?.length ? ("UTC: " + items[0].label) : "",
+                    label: (ctx) => {
+                        const label = ctx.dataset.label || "";
+                        let dec = 4;
+                        if (label.includes("RSI")) dec = 2;
+                        if (label.includes("Z")) dec = 2;
+                        if (label.includes("MACD")) dec = 4;
+                        return `${label}: ${fmt(ctx.parsed.y, dec)}`;
                     }
                 }
             },
-            scales: { x: { ticks: { maxTicksLimit: 6 } }, y: { suggestedMin: 0, suggestedMax: 100 } }
-        }
-    });
-
-    // -------------------------------
-    // 3) MACD hist
-    // -------------------------------
-    new Chart(document.getElementById("chartMACD"), {
-        type: "bar",
-        data: {
-            labels,
-            datasets: [
-                { label: "MACD Hist", data: CH.macd_hist }
-            ]
+            legend: { display: true }
         },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            interaction: { mode: "index", intersect: false },
-            plugins: {
-                tooltip: {
-                    callbacks: {
-                        title: (items) => items?.length ? ("UTC: " + items[0].label) : "",
-                        label: (ctx) => `MACD Hist: ${fmt(ctx.parsed.y, 4)}`
-                    }
-                }
-            },
-            scales: { x: { ticks: { maxTicksLimit: 6 } } }
+        scales: {
+            x: { ticks: { maxTicksLimit: 6 } }
         }
-    });
+    };
 
-    // -------------------------------
-    // 4) Ratio z-score
-    // -------------------------------
-    new Chart(document.getElementById("chartRatio"), {
-        type: "line",
-        data: {
-            labels,
-            datasets: [
-                { label: "NG/CL Ratio Z", data: CH.ratio_z, tension: 0.15, pointRadius: 0 }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            interaction: { mode: "index", intersect: false },
-            plugins: {
-                tooltip: {
-                    callbacks: {
-                        title: (items) => items?.length ? ("UTC: " + items[0].label) : "",
-                        label: (ctx) => `Z: ${fmt(ctx.parsed.y, 2)}`
-                    }
-                }
+    try {
+        new Chart(document.getElementById('chartPrice'), {
+            type: 'line',
+            data: {
+                labels,
+                datasets: [
+                    { label: 'NG Close', data: CH.ng_close, tension: 0.15, pointRadius: 0 },
+                    { label: 'EMA 10', data: CH.ema10, tension: 0.15, pointRadius: 0 },
+                    { label: 'EMA 30', data: CH.ema30, tension: 0.15, pointRadius: 0 },
+                    { label: 'EMA 50', data: CH.ema50, tension: 0.15, pointRadius: 0 },
+                ]
             },
-            scales: { x: { ticks: { maxTicksLimit: 6 } } }
-        }
-    });
+            options: commonOptions
+        });
+
+        new Chart(document.getElementById('chartRSI'), {
+            type: 'line',
+            data: { labels, datasets: [{ label: 'RSI 14', data: CH.rsi14, tension: 0.15, pointRadius: 0 }] },
+            options: { ...commonOptions, scales: { ...commonOptions.scales, y: { suggestedMin: 0, suggestedMax: 100 } } }
+        });
+
+        new Chart(document.getElementById('chartMACD'), {
+            type: 'bar',
+            data: { labels, datasets: [{ label: 'MACD Hist', data: CH.macd_hist }] },
+            options: commonOptions
+        });
+
+        new Chart(document.getElementById('chartRatio'), {
+            type: 'line',
+            data: { labels, datasets: [{ label: 'NG/CL Ratio Z', data: CH.ratio_z, tension: 0.15, pointRadius: 0 }] },
+            options: commonOptions
+        });
+    } catch (e) {
+        console.log("Chart render error:", e);
+    }
 </script>
 {% endif %}
-
 </body>
 </html>
