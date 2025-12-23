@@ -10,7 +10,7 @@ from flask import Flask, render_template, request
 app = Flask(__name__)
 
 # ---------------------------------------------------------------------
-# SIMPLE CACHE
+# SIMPLE CACHE (keeps the app from refetching every time = faster)
 # ---------------------------------------------------------------------
 CACHE_TTL_SECONDS = 300  # 5 minutes
 
@@ -19,7 +19,7 @@ weather_cache = {"info": None, "error": None, "score": 0.0, "timestamp": 0.0}
 chart_cache = {"data": None, "error": None, "timestamp": 0.0}
 
 # ---------------------------------------------------------------------
-# WEATHER LOCATIONS
+# WEATHER REGIONS (US + Europe)
 # ---------------------------------------------------------------------
 WEATHER_LOCATIONS = [
     {"name": "US Northeast (New York)", "lat": 40.71, "lon": -74.00},
@@ -34,6 +34,10 @@ WEATHER_LOCATIONS = [
 # WEATHER HELPERS
 # ---------------------------------------------------------------------
 def fetch_weather_for_location(lat: float, lon: float):
+    """
+    Open-Meteo free API, next 7 days hourly temperature.
+    Returns: (current_temp, HDD_7d, CDD_7d) base 18°C.
+    """
     base_temp = 18.0
     url = (
         "https://api.open-meteo.com/v1/forecast"
@@ -67,7 +71,9 @@ def compute_weather_summary():
     for loc in WEATHER_LOCATIONS:
         try:
             temp, hdd, cdd = fetch_weather_for_location(loc["lat"], loc["lon"])
-            locations_data.append({"name": loc["name"], "temp": temp, "hdd7": hdd, "cdd7": cdd})
+            locations_data.append(
+                {"name": loc["name"], "temp": temp, "hdd7": hdd, "cdd7": cdd}
+            )
             total_hdd += hdd
             total_cdd += cdd
             count += 1
@@ -118,11 +124,15 @@ def compute_weather_summary():
     return weather_info, None, weather_score
 
 
-def get_weather_summary_cached(force_refresh: bool = False):
+def get_weather_summary_cached():
     now = time.time()
     age = now - weather_cache["timestamp"]
-    if (not force_refresh) and age < CACHE_TTL_SECONDS and weather_cache["info"] is not None:
-        return weather_cache["info"], weather_cache["error"], weather_cache["score"]
+    if age < CACHE_TTL_SECONDS and weather_cache["info"] is not None:
+        return (
+            weather_cache["info"],
+            weather_cache["error"],
+            weather_cache["score"],
+        )
 
     info, err, score = compute_weather_summary()
     weather_cache["info"] = info
@@ -176,7 +186,7 @@ def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
 
 
 # ---------------------------------------------------------------------
-# MARKET FEATURES
+# MARKET DATA + FEATURES (signal engine)
 # ---------------------------------------------------------------------
 def get_latest_features_fresh():
     try:
@@ -194,6 +204,7 @@ def get_latest_features_fresh():
         df["ng_low"] = ng["Low"]
         df["cl_close"] = cl["Close"]
         df = df.dropna()
+
         if df.empty:
             return None, "Not enough overlapping NG & CL data after cleaning."
 
@@ -205,6 +216,7 @@ def get_latest_features_fresh():
         df["ema_fast"] = ema(close, 10)
         df["ema_slow"] = ema(close, 30)
         df["ema_long"] = ema(close, 50)
+
         df["rsi"] = rsi(close, 14)
 
         df["ret_1h"] = close.pct_change(1)
@@ -213,10 +225,14 @@ def get_latest_features_fresh():
         df["atr_14"] = atr(high, low, close, 14)
 
         mid, upper, lower = bollinger_bands(close, 20, 2.0)
+        df["bb_mid"] = mid
+        df["bb_upper"] = upper
+        df["bb_lower"] = lower
         df["bb_pos"] = (close - lower) / (upper - lower + 1e-9)
 
-        macd_line, _, hist = macd(close, 12, 26, 9)
+        macd_line, signal_line, hist = macd(close, 12, 26, 9)
         df["macd_line"] = macd_line
+        df["macd_signal"] = signal_line
         df["macd_hist"] = hist
 
         df["ng_cl_ratio"] = close / cl_close
@@ -225,7 +241,7 @@ def get_latest_features_fresh():
         ratio_std = ratio.rolling(50).std()
         df["ng_cl_ratio_z"] = (ratio - ratio_ma) / (ratio_std + 1e-9)
 
-        df["cl_ret_3d"] = cl_close.pct_change(72)
+        df["cl_ret_3d"] = cl_close.pct_change(72)  # 72 hours ≈ 3 days
 
         df = df.dropna()
         if df.empty:
@@ -239,7 +255,7 @@ def get_latest_features_fresh():
             ts_str = str(ts)
 
         feats = {
-            "last_price": float(latest["ng_close"]),
+            "last_price": float(latest["ng_close"]),  # signal engine close
             "ema_fast": float(latest["ema_fast"]),
             "ema_slow": float(latest["ema_slow"]),
             "ema_long": float(latest["ema_long"]),
@@ -255,14 +271,15 @@ def get_latest_features_fresh():
             "timestamp": ts_str,
         }
         return feats, None
+
     except Exception as e:
         return None, f"Data error: {e}"
 
 
-def get_latest_features_cached(force_refresh: bool = False):
+def get_latest_features_cached():
     now = time.time()
     age = now - market_cache["timestamp"]
-    if (not force_refresh) and age < CACHE_TTL_SECONDS and market_cache["data"] is not None:
+    if age < CACHE_TTL_SECONDS and market_cache["data"] is not None:
         return market_cache["data"], market_cache["error"]
 
     feats, err = get_latest_features_fresh()
@@ -273,7 +290,7 @@ def get_latest_features_cached(force_refresh: bool = False):
 
 
 # ---------------------------------------------------------------------
-# CHART DATA
+# CHART DATA (graphs)  ✅ UPDATED: also returns chart_last_price + chart_last_timestamp
 # ---------------------------------------------------------------------
 def get_chart_data_fresh():
     try:
@@ -296,7 +313,7 @@ def get_chart_data_fresh():
         df["ema30"] = ema(df["ng_close"], 30)
         df["ema50"] = ema(df["ng_close"], 50)
         df["rsi14"] = rsi(df["ng_close"], 14)
-        _, _, macd_hist = macd(df["ng_close"])
+        macd_line, macd_signal, macd_hist = macd(df["ng_close"])
         df["macd_hist"] = macd_hist
 
         df["ng_cl_ratio"] = df["ng_close"] / df["cl_close"]
@@ -309,7 +326,7 @@ def get_chart_data_fresh():
         if df.empty:
             return None, "Not enough chart candles after indicator warm-up."
 
-        df = df.tail(180)
+        df = df.tail(180)  # ~7 days hourly
 
         labels = []
         for ts in df.index:
@@ -317,6 +334,9 @@ def get_chart_data_fresh():
                 labels.append(ts.tz_convert("UTC").strftime("%Y-%m-%d %H:%M"))
             except Exception:
                 labels.append(str(ts))
+
+        chart_last_price = float(df["ng_close"].iloc[-1])
+        chart_last_ts = labels[-1]
 
         out = {
             "labels": labels,
@@ -327,16 +347,19 @@ def get_chart_data_fresh():
             "rsi14": [float(x) for x in df["rsi14"].values],
             "macd_hist": [float(x) for x in df["macd_hist"].values],
             "ratio_z": [float(x) for x in df["ratio_z"].values],
+            # ✅ new fields
+            "chart_last_price": chart_last_price,
+            "chart_last_ts": chart_last_ts,
         }
         return out, None
     except Exception as e:
         return None, f"Chart data error: {e}"
 
 
-def get_chart_data_cached(force_refresh: bool = False):
+def get_chart_data_cached():
     now = time.time()
     age = now - chart_cache["timestamp"]
-    if (not force_refresh) and age < CACHE_TTL_SECONDS and chart_cache["data"] is not None:
+    if age < CACHE_TTL_SECONDS and chart_cache["data"] is not None:
         return chart_cache["data"], chart_cache["error"]
 
     data, err = get_chart_data_fresh()
@@ -347,7 +370,7 @@ def get_chart_data_cached(force_refresh: bool = False):
 
 
 # ---------------------------------------------------------------------
-# CRUDE IMPACT
+# CRUDE OIL IMPACT TEXT + SCORE
 # ---------------------------------------------------------------------
 def compute_crude_impact(features):
     ratio_z = features.get("ng_cl_ratio_z", 0.0)
@@ -381,11 +404,16 @@ def compute_crude_impact(features):
         impact_text = "Crude/NG spread looks mostly neutral."
         crude_score = 0.0
 
-    return {"cl_ret_3d_pct": cl_ret_pct, "trend_label": trend_label, "impact_text": impact_text, "score": crude_score}
+    return {
+        "cl_ret_3d_pct": cl_ret_pct,
+        "trend_label": trend_label,
+        "impact_text": impact_text,
+        "score": crude_score,
+    }
 
 
 # ---------------------------------------------------------------------
-# SIGNAL + ETA
+# SIGNAL LOGIC (BUY / SELL / FLAT) + ETA (rough)
 # ---------------------------------------------------------------------
 def _eta_hours(distance: float, atr_per_hour: float):
     if atr_per_hour is None or atr_per_hour <= 0 or distance <= 0:
@@ -407,22 +435,27 @@ def make_signal(features, weather_score: float = 0.0):
     macd_hist = features["macd_hist"]
     ratio_z = features["ng_cl_ratio_z"]
 
-    strong_up = ema_fast_val > ema_slow_val > ema_long_val and macd_line > 0
-    strong_down = ema_fast_val < ema_slow_val < ema_long_val and macd_line < 0
+    strong_up_trend = ema_fast_val > ema_slow_val > ema_long_val and macd_line > 0
+    strong_down_trend = ema_fast_val < ema_slow_val < ema_long_val and macd_line < 0
 
     overbought = (rsi_val > 70) or (bb_pos > 0.9) or (ratio_z > 1.0)
     oversold = (rsi_val < 30) or (bb_pos < 0.1) or (ratio_z < -1.0)
 
-    if strong_up and not overbought:
-        direction, base_conf = "UP", 0.7
-    elif strong_down and not oversold:
-        direction, base_conf = "DOWN", 0.7
+    if strong_up_trend and not overbought:
+        direction = "UP"
+        base_conf = 0.7
+    elif strong_down_trend and not oversold:
+        direction = "DOWN"
+        base_conf = 0.7
     elif oversold and macd_hist > 0:
-        direction, base_conf = "UP", 0.6
+        direction = "UP"
+        base_conf = 0.6
     elif overbought and macd_hist < 0:
-        direction, base_conf = "DOWN", 0.6
+        direction = "DOWN"
+        base_conf = 0.6
     else:
-        direction, base_conf = "FLAT", 0.5
+        direction = "FLAT"
+        base_conf = 0.5
 
     if atr_14 and not math.isnan(atr_14) and atr_14 > 0:
         atr_pct = atr_14 / (last_price + 1e-9)
@@ -435,10 +468,10 @@ def make_signal(features, weather_score: float = 0.0):
     tp_pct = stop_pct * 2.5
 
     trend_strength = abs(ema_fast_val - ema_long_val) / (last_price + 1e-9)
-    conf_adj = min(trend_strength * 0.8, 0.2)
+    conf_adj_trend = min(trend_strength * 0.8, 0.2)
     ratio_penalty = min(abs(ratio_z) * 0.05, 0.15)
 
-    confidence = base_conf + conf_adj - ratio_penalty
+    confidence = base_conf + conf_adj_trend - ratio_penalty
 
     if weather_score != 0.0:
         if direction == "UP":
@@ -462,8 +495,9 @@ def make_signal(features, weather_score: float = 0.0):
 
     dist_tp = abs(take_profit - last_price)
     dist_sl = abs(stop_loss - last_price)
-    eta_tp_h = _eta_hours(dist_tp, atr_14 if (atr_14 and not math.isnan(atr_14)) else None)
-    eta_sl_h = _eta_hours(dist_sl, atr_14 if (atr_14 and not math.isnan(atr_14)) else None)
+    atr_val = atr_14 if (atr_14 and not math.isnan(atr_14)) else None
+    eta_tp_h = _eta_hours(dist_tp, atr_val)
+    eta_sl_h = _eta_hours(dist_sl, atr_val)
 
     return {
         "direction": direction,
@@ -501,13 +535,10 @@ def make_weekly_forecast(signal, features):
 
     days = ["Today / next 24h", "Day 2", "Day 3", "Day 4", "Day 5"]
     outlook = []
+
     for i, label in enumerate(days):
         day_conf = max(min(base_conf - 0.03 * i, 0.95), 0.35)
-
-        if direction == "FLAT":
-            bias = "CHOPPY"
-        else:
-            bias = "CHOPPY" if day_conf < 0.5 else direction
+        bias = "CHOPPY" if (direction == "FLAT" or day_conf < 0.5) else direction
 
         if bias == "UP":
             note = "Bullish bias continues while uptrend & demand factors stay intact."
@@ -523,26 +554,32 @@ def make_weekly_forecast(signal, features):
         else:
             note += " Volatility: relatively calm (for NatGas)."
 
-        outlook.append({"label": label, "bias": bias, "confidence": day_conf, "trend_strength": trend_strength_score, "note": note})
+        outlook.append(
+            {
+                "label": label,
+                "bias": bias,
+                "confidence": day_conf,
+                "trend_strength": trend_strength_score,
+                "note": note,
+            }
+        )
+
     return outlook
 
 
 # ---------------------------------------------------------------------
-# ROUTE
+# FLASK ROUTE
 # ---------------------------------------------------------------------
 @app.route("/", methods=["GET", "POST"])
 def index():
-    force_refresh = request.args.get("refresh", "0") == "1"
-
     account_balance = None
     risk_pct = 1.0
     position_size = None
 
     signal = None
     weekly_outlook = []
-    last_price = None
-    timestamp = None
     error_msg = None
+
     feats = None
     weather_info = None
     weather_error = None
@@ -551,22 +588,38 @@ def index():
     chart_data = None
     chart_error = None
 
-    feats, data_error = get_latest_features_cached(force_refresh=force_refresh)
+    # --- Fetch features (signal engine) ---
+    feats, data_error = get_latest_features_cached()
     if data_error:
         error_msg = data_error
-    else:
-        timestamp = feats["timestamp"]
-        last_price = feats["last_price"]
 
-    weather_info, weather_error, weather_score = get_weather_summary_cached(force_refresh=force_refresh)
+    # --- Weather ---
+    weather_info, weather_error, weather_score = get_weather_summary_cached()
 
+    # --- Signal ---
     if feats is not None and error_msg is None:
         cl_impact = compute_crude_impact(feats)
         signal = make_signal(feats, weather_score)
         weekly_outlook = make_weekly_forecast(signal, feats)
 
-    chart_data, chart_error = get_chart_data_cached(force_refresh=force_refresh)
+    # --- Charts (and chart-based display price) ---
+    chart_data, chart_error = get_chart_data_cached()
 
+    # ✅ Display price & timestamp now come from chart data to match NG Close line
+    displayed_price = None
+    displayed_timestamp = None
+    displayed_price_source = None
+
+    if chart_data and not chart_error:
+        displayed_price = chart_data.get("chart_last_price")
+        displayed_timestamp = chart_data.get("chart_last_ts")
+        displayed_price_source = "chart (last hourly close)"
+    elif feats:
+        displayed_price = feats.get("last_price")
+        displayed_timestamp = feats.get("timestamp")
+        displayed_price_source = "signal engine (last hourly close)"
+
+    # --- Position sizing ---
     if request.method == "POST":
         try:
             account_balance = float(request.form.get("account_balance", "0"))
@@ -578,9 +631,12 @@ def index():
         except ValueError:
             risk_pct = 1.0
 
-        if signal and account_balance and last_price:
+        # For sizing, use signal engine last_price so SL distance matches signal SL/TP math
+        last_price_for_sizing = feats["last_price"] if feats else None
+
+        if signal and account_balance and last_price_for_sizing:
             risk_amount = account_balance * (risk_pct / 100.0)
-            stop_distance = abs(last_price - signal["stop_loss"])
+            stop_distance = abs(last_price_for_sizing - signal["stop_loss"])
             if stop_distance > 0:
                 position_size = risk_amount / stop_distance
 
@@ -588,8 +644,9 @@ def index():
         "index.html",
         signal=signal,
         weekly_outlook=weekly_outlook,
-        last_price=last_price,
-        timestamp=timestamp,
+        last_price=displayed_price,
+        timestamp=displayed_timestamp,
+        price_source=displayed_price_source,
         account_balance=account_balance,
         risk_pct=risk_pct,
         position_size=position_size,
@@ -600,7 +657,6 @@ def index():
         cl_impact=cl_impact,
         chart_data_json=json.dumps(chart_data) if chart_data else None,
         chart_error=chart_error,
-        force_refresh=force_refresh,
     )
 
 
