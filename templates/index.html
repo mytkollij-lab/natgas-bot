@@ -43,22 +43,6 @@
         .timestamp { font-size:0.85rem; color:var(--muted); text-align:right; }
         .timestamp span { color:var(--accent); }
 
-        .top-actions{
-            display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap;
-        }
-        .btn-link{
-            display:inline-flex; align-items:center; gap:8px;
-            padding:8px 14px;
-            border-radius:999px;
-            border:1px solid rgba(56,189,248,0.45);
-            background:rgba(56,189,248,0.10);
-            color:var(--text);
-            text-decoration:none;
-            font-weight:650;
-            cursor:pointer;
-        }
-        .btn-link:hover{ filter:brightness(1.06); }
-
         .card,.card-soft {
             border-radius:14px; padding:14px 14px 16px;
             border:1px solid rgba(148,163,184,0.15);
@@ -136,6 +120,11 @@
             background:linear-gradient(135deg,#020617,#020617);
             color:var(--text); font-size:0.9rem;
         }
+        input:focus {
+            outline:1px solid var(--accent);
+            border-color:var(--accent);
+            box-shadow:0 0 0 1px rgba(56,189,248,0.6);
+        }
         button {
             padding:7px 14px; margin-top:6px;
             border-radius:999px; border:none;
@@ -143,6 +132,7 @@
             color:#0b1120; font-weight:600; font-size:0.9rem;
             cursor:pointer; box-shadow:0 10px 22px rgba(56,189,248,0.35);
         }
+        button:hover { filter:brightness(1.05); }
 
         .small { font-size:0.82rem; color:var(--muted); }
         .split-line {
@@ -150,28 +140,52 @@
             background:linear-gradient(to right,transparent,rgba(148,163,184,0.5),transparent);
             margin:8px 0 10px;
         }
+        .weekly-bias-up { color:var(--green); font-weight:600; }
+        .weekly-bias-down { color:var(--red); font-weight:600; }
+        .weekly-bias-choppy { color:var(--muted); font-weight:600; }
 
         /* --- METERS --- */
-        .meters { display:grid; grid-template-columns:1fr; gap:10px; margin-top:10px; }
-        @media (min-width:880px){ .meters { grid-template-columns:1fr 1fr; } }
+        .meters {
+            display:grid;
+            grid-template-columns:1fr;
+            gap:10px;
+            margin-top:10px;
+        }
+        @media (min-width:880px){
+            .meters { grid-template-columns:1fr 1fr; }
+        }
         .meter-card {
             background:rgba(2,6,23,0.35);
             border:1px solid rgba(148,163,184,0.14);
             border-radius:12px;
             padding:10px 12px;
         }
-        .meter-top { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:6px; }
+        .meter-top {
+            display:flex; align-items:center; justify-content:space-between;
+            gap:10px; margin-bottom:6px;
+        }
         .meter-title { font-weight:650; font-size:0.9rem; }
         .meter-value { color:var(--accent); font-weight:650; }
-        .bar { height:10px; border-radius:999px; background:rgba(148,163,184,0.15); overflow:hidden; }
-        .bar > div { height:100%; width:0%; background:linear-gradient(90deg,#38bdf8,#22c55e); }
+        .bar {
+            height:10px;
+            border-radius:999px;
+            background:rgba(148,163,184,0.15);
+            overflow:hidden;
+        }
+        .bar > div {
+            height:100%;
+            width:0%;
+            background:linear-gradient(90deg,#38bdf8,#22c55e);
+        }
         .bar.red > div { background:linear-gradient(90deg,#ef4444,#eab308); }
         .bar.gray > div { background:linear-gradient(90deg,#94a3b8,#e5e7eb); }
 
-        /* Charts */
+        /* Charts: SMALLER */
         .chart-box { margin-top:12px; }
         .chart-grid { display:grid; grid-template-columns:1fr; gap:14px; }
-        @media (min-width:880px){ .chart-grid { grid-template-columns:1fr 1fr; } }
+        @media (min-width:880px){
+            .chart-grid { grid-template-columns:1fr 1fr; }
+        }
         .chart-card {
             background:rgba(2,6,23,0.25);
             border:1px solid rgba(148,163,184,0.14);
@@ -180,9 +194,7 @@
         }
         .chart-title { margin:0; font-size:0.98rem; }
         .chart-explain { margin:4px 0 8px; font-size:0.82rem; color:var(--muted); line-height:1.35; }
-
-        /* IMPORTANT: give charts a height so they actually show */
-        .chart-card canvas { width:100% !important; height:240px !important; }
+        canvas { width:100% !important; height:220px !important; }
     </style>
 </head>
 
@@ -197,20 +209,13 @@
             <div class="title-sub">
                 Main focus: BUY / SELL / NO TRADE signal, with smaller graphs + clearer hover info.
             </div>
-
-            <div class="top-actions">
-                <a class="btn-link" href="/?refresh=1">🔄 Refresh now</a>
-                {% if force_refresh %}
-                    <span class="small">Forced refresh ✅</span>
-                {% else %}
-                    <span class="small">Cache up to 5 min</span>
-                {% endif %}
-            </div>
         </div>
-
         <div class="timestamp">
             {% if timestamp %}
                 <div>Last market update: <span>{{ timestamp }}</span> UTC</div>
+                {% if price_source %}
+                    <div class="small">Price source: {{ price_source }}</div>
+                {% endif %}
             {% endif %}
         </div>
     </header>
@@ -245,7 +250,7 @@
 
             {% if last_price %}
                 <p>
-                    <span class="label">NatGas last price:</span>
+                    <span class="label">NatGas last price (matches NG Close chart):</span>
                     <span style="color:var(--accent); font-weight:600;">
                         {{ last_price | round(4) }}
                     </span>
@@ -281,7 +286,7 @@
                         <div class="meter-value">{{ signal.trend_strength | round(1) }}/100</div>
                     </div>
                     <div class="bar gray"><div id="m_trend"></div></div>
-                    <div class="small">How separated EMA10 vs EMA50 is (stronger trend = bigger separation).</div>
+                    <div class="small">How separated EMA10 vs EMA50 is.</div>
                 </div>
 
                 <div class="meter-card">
@@ -316,15 +321,28 @@
 
             <p class="small">
                 Stop distance: {{ (signal.stop_pct * 100) | round(2) }}% ·
-                TP distance: {{ (signal.tp_pct * 100) | round(2) }}%
+                TP distance: {{ (signal.tp_pct * 100) | round(2) }}%<br>
+                Risk is sized using volatility / ATR, not a fixed number.
             </p>
 
             <div class="split-line"></div>
 
             <p>
                 <span class="label">Rough ETA (NOT guaranteed):</span><br>
-                TP time-scale: {% if signal.eta_tp_hours %}~{{ signal.eta_tp_hours | round(1) }}h{% else %}n/a{% endif %}<br>
-                SL time-scale: {% if signal.eta_sl_hours %}~{{ signal.eta_sl_hours | round(1) }}h{% else %}n/a{% endif %}
+                {% if signal.eta_tp_hours %}
+                    TP time-scale: ~{{ signal.eta_tp_hours | round(1) }} hours
+                {% else %}
+                    TP time-scale: n/a
+                {% endif %}
+                <br>
+                {% if signal.eta_sl_hours %}
+                    SL time-scale: ~{{ signal.eta_sl_hours | round(1) }} hours
+                {% else %}
+                    SL time-scale: n/a
+                {% endif %}
+            </p>
+            <p class="small">
+                ETA uses ATR(14) as a typical 1-hour move. Price can hit faster, slower, or never.
             </p>
 
         {% else %}
@@ -341,11 +359,16 @@
         {% endif %}
 
         {% if chart_data_json %}
+            <p class="small">
+                Tip: hover any line/bar → exact date/time + values.
+            </p>
+
             <div class="chart-grid">
                 <div class="chart-card">
                     <p class="chart-title"><b>1) Price + EMA10/30/50</b></p>
                     <p class="chart-explain">
-                        EMA10 above EMA30 above EMA50 = bullish trend. Crossed/tangled = choppy.
+                        EMA10 above EMA30 above EMA50 = bullish trend.
+                        Tangled/crossing = choppy.
                     </p>
                     <canvas id="chartPrice"></canvas>
                 </div>
@@ -369,13 +392,13 @@
                 <div class="chart-card">
                     <p class="chart-title"><b>4) NG/CL Ratio Z-Score</b></p>
                     <p class="chart-explain">
-                        Positive = NG expensive vs crude. Negative = NG cheap vs crude.
+                        Positive = NatGas expensive vs crude. Negative = NatGas cheap vs crude.
                     </p>
                     <canvas id="chartRatio"></canvas>
                 </div>
             </div>
         {% else %}
-            <p class="small">Charts not available yet (no chart data returned).</p>
+            <p class="small">Charts not available yet.</p>
         {% endif %}
     </div>
 
@@ -384,6 +407,10 @@
         <h2><span class="dot"></span> Weekly outlook (projection)</h2>
 
         {% if weekly_outlook and signal %}
+            <p class="small">
+                Outlook is based on current trend, volatility, NatGas vs oil and weather.
+                Confidence fades further into the week.
+            </p>
             <table>
                 <tr>
                     <th>Period</th>
@@ -408,15 +435,45 @@
                     </tr>
                 {% endfor %}
             </table>
+            <p class="small">Projection only — NatGas can change instantly on news/weather.</p>
         {% else %}
             <p>No weekly outlook available.</p>
         {% endif %}
     </div>
 
-    <!-- POSITION SIZE -->
+    <!-- BOTTOM GRID -->
     <div class="grid grid-2-even" style="margin-top:14px;">
         <div class="card-soft">
-            <h2><span class="dot"></span> Position size</h2>
+            <h2><span class="dot"></span> Market snapshot & tech</h2>
+            {% if feats %}
+                <p>
+                    <span class="label">EMAs (short / mid / long):</span><br>
+                    EMA 10: {{ feats.ema_fast | round(4) }}<br>
+                    EMA 30: {{ feats.ema_slow | round(4) }}<br>
+                    EMA 50: {{ feats.ema_long | round(4) }}
+                </p>
+                <p>
+                    <span class="label">RSI 14:</span> {{ feats.rsi | round(2) }}<br>
+                    <span class="label">24h volatility:</span> {{ (feats.vol_24h * 100) | round(2) }}%<br>
+                    <span class="label">ATR 14:</span> {{ feats.atr_14 | round(4) }}
+                </p>
+                <p>
+                    <span class="label">Bollinger position:</span>
+                    {{ (feats.bb_pos * 100) | round(1) }}%<br>
+                    <span class="label">MACD line / hist:</span>
+                    {{ feats.macd_line | round(4) }} / {{ feats.macd_hist | round(4) }}
+                </p>
+                <p>
+                    <span class="label">NG / CL ratio z-score:</span>
+                    {{ feats.ng_cl_ratio_z | round(2) }}
+                </p>
+            {% else %}
+                <p>No indicators available.</p>
+            {% endif %}
+        </div>
+
+        <div class="card-soft">
+            <h2><span class="dot"></span> Position size & usage</h2>
             <form method="post">
                 <label>
                     Account balance:
@@ -428,7 +485,7 @@
                     <input type="number" step="0.1" name="risk_pct"
                            value="{{ risk_pct }}">
                 </label>
-                <button type="submit">Recalculate</button>
+                <button type="submit">Recalculate position size</button>
             </form>
 
             {% if position_size %}
@@ -439,12 +496,9 @@
                     </span>
                 </p>
             {% endif %}
-        </div>
 
-        <div class="card-soft">
-            <h2><span class="dot"></span> Notes</h2>
-            <p class="small">
-                If charts disappear: press “Refresh now” to force new chart fetch.
+            <p class="small" style="margin-top:6px;">
+                Position size = (account × risk%) ÷ stop distance.
             </p>
         </div>
     </div>
@@ -464,6 +518,7 @@
         const v = (x - min) / (max - min);
         return Math.max(0, Math.min(v * 100, 100));
     };
+
     document.getElementById("m_weather").style.width = mapSigned(weather, -25, 25) + "%";
     document.getElementById("m_crude").style.width = mapSigned(crude, -25, 25) + "%";
 </script>
@@ -485,15 +540,19 @@
         interaction: { mode: 'index', intersect: false },
         plugins: {
             tooltip: {
+                enabled: true,
                 callbacks: {
-                    title: (items) => items?.length ? ("UTC: " + items[0].label) : "",
+                    title: (items) => {
+                        if (!items || !items.length) return "";
+                        return "UTC: " + items[0].label;
+                    },
                     label: (ctx) => {
                         const label = ctx.dataset.label || "";
+                        const val = ctx.parsed.y;
                         let dec = 4;
                         if (label.includes("RSI")) dec = 2;
                         if (label.includes("Z")) dec = 2;
-                        if (label.includes("MACD")) dec = 4;
-                        return `${label}: ${fmt(ctx.parsed.y, dec)}`;
+                        return `${label}: ${fmt(val, dec)}`;
                     }
                 }
             },
@@ -504,41 +563,70 @@
         }
     };
 
-    try {
-        new Chart(document.getElementById('chartPrice'), {
-            type: 'line',
-            data: {
-                labels,
-                datasets: [
-                    { label: 'NG Close', data: CH.ng_close, tension: 0.15, pointRadius: 0 },
-                    { label: 'EMA 10', data: CH.ema10, tension: 0.15, pointRadius: 0 },
-                    { label: 'EMA 30', data: CH.ema30, tension: 0.15, pointRadius: 0 },
-                    { label: 'EMA 50', data: CH.ema50, tension: 0.15, pointRadius: 0 },
-                ]
-            },
-            options: commonOptions
-        });
+    new Chart(document.getElementById('chartPrice'), {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [
+                { label: 'NG Close', data: CH.ng_close, tension: 0.15, pointRadius: 0 },
+                { label: 'EMA 10', data: CH.ema10, tension: 0.15, pointRadius: 0 },
+                { label: 'EMA 30', data: CH.ema30, tension: 0.15, pointRadius: 0 },
+                { label: 'EMA 50', data: CH.ema50, tension: 0.15, pointRadius: 0 },
+            ]
+        },
+        options: commonOptions
+    });
 
-        new Chart(document.getElementById('chartRSI'), {
-            type: 'line',
-            data: { labels, datasets: [{ label: 'RSI 14', data: CH.rsi14, tension: 0.15, pointRadius: 0 }] },
-            options: { ...commonOptions, scales: { ...commonOptions.scales, y: { suggestedMin: 0, suggestedMax: 100 } } }
-        });
+    new Chart(document.getElementById('chartRSI'), {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [
+                { label: 'RSI 14', data: CH.rsi14, tension: 0.15, pointRadius: 0 }
+            ]
+        },
+        options: {
+            ...commonOptions,
+            scales: {
+                ...commonOptions.scales,
+                y: { suggestedMin: 0, suggestedMax: 100 }
+            }
+        }
+    });
 
-        new Chart(document.getElementById('chartMACD'), {
-            type: 'bar',
-            data: { labels, datasets: [{ label: 'MACD Hist', data: CH.macd_hist }] },
-            options: commonOptions
-        });
+    new Chart(document.getElementById('chartMACD'), {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [
+                { label: 'MACD Hist', data: CH.macd_hist }
+            ]
+        },
+        options: {
+            ...commonOptions,
+            plugins: {
+                ...commonOptions.plugins,
+                tooltip: {
+                    ...commonOptions.plugins.tooltip,
+                    callbacks: {
+                        title: (items) => items?.length ? ("UTC: " + items[0].label) : "",
+                        label: (ctx) => `MACD Hist: ${fmt(ctx.parsed.y, 4)}`
+                    }
+                }
+            }
+        }
+    });
 
-        new Chart(document.getElementById('chartRatio'), {
-            type: 'line',
-            data: { labels, datasets: [{ label: 'NG/CL Ratio Z', data: CH.ratio_z, tension: 0.15, pointRadius: 0 }] },
-            options: commonOptions
-        });
-    } catch (e) {
-        console.log("Chart render error:", e);
-    }
+    new Chart(document.getElementById('chartRatio'), {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [
+                { label: 'NG/CL Ratio Z', data: CH.ratio_z, tension: 0.15, pointRadius: 0 }
+            ]
+        },
+        options: commonOptions
+    });
 </script>
 {% endif %}
 </body>
