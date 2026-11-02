@@ -315,7 +315,7 @@ button { cursor: pointer; }
 .tile-speed { grid-area: speed; display: flex; flex-direction: column; }
 .tile-nav { grid-area: nav; display: flex; flex-direction: column; gap: 12px; }
 .tile-media { grid-area: media; display: flex; flex-direction: column; justify-content: space-between; gap: 10px; }
-.tile-glance { grid-area: glance; display: grid; grid-template-rows: 1fr 1fr; gap: 10px; padding: 10px; }
+.tile-glance { grid-area: glance; display: grid; grid-template-rows: 1fr; padding: 10px; }
 
 .speed-head, .speed-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .heading { font-size: 18px; font-weight: 800; color: var(--accent); }
@@ -422,11 +422,8 @@ button { cursor: pointer; }
   min-height: 0;
   overflow: hidden;
 }
-.glance-big { font-size: 30px; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.glance-big { font-size: 56px; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; line-height: 1.1; }
 .glance-sub { font-size: 14px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.glance-big[data-action="BUY"] { color: var(--go); }
-.glance-big[data-action="SELL"] { color: var(--stop); }
-.glance-big[data-action="WAIT"] { color: var(--accent); }
 
 /* ---------------------------------------------------------------- map */
 .map { position: absolute; inset: 0; background: var(--panel-2); }
@@ -626,23 +623,6 @@ button { cursor: pointer; }
 .pad button:active { background: var(--panel-3); }
 .btn-call { min-height: 64px; font-size: 20px; }
 
-/* ---------------------------------------------------------------- natgas */
-.gas-card { max-width: 880px; margin: 0 auto; }
-.gas-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin: 6px 0 14px; }
-.gas-action { font-size: clamp(48px, 10vh, 86px); font-weight: 900; line-height: 1; letter-spacing: -0.02em; }
-.gas-action[data-action="BUY"] { color: var(--go); }
-.gas-action[data-action="SELL"] { color: var(--stop); }
-.gas-action[data-action="WAIT"] { color: var(--accent); }
-.gas-price { text-align: right; }
-.gas-price-val { display: block; font-size: 40px; font-weight: 800; font-variant-numeric: tabular-nums; }
-.meter { height: 12px; border-radius: 999px; background: var(--panel-3); overflow: hidden; }
-.meter-fill { height: 100%; border-radius: inherit; background: var(--accent); transition: width 0.4s; }
-.facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 16px 0 0; }
-.facts div { background: var(--panel-2); border-radius: 16px; padding: 12px 14px; min-width: 0; }
-.facts dt { font-size: 13px; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; }
-.facts dd { margin: 4px 0 0; font-size: 20px; font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gas-error { color: var(--stop); font-weight: 600; }
-
 /* ---------------------------------------------------------------- settings */
 .settings { max-width: 880px; margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
 .set-row {
@@ -798,12 +778,10 @@ button { cursor: pointer; }
   .tile { padding: 14px; border-radius: 20px; }
   .tile-speed { min-height: 230px; }
   .tile-nav { min-height: 180px; }
-  .tile-glance { grid-template-rows: none; grid-template-columns: 1fr 1fr; }
-  .glance-big { font-size: 24px; }
+  .glance-big { font-size: 36px; }
   .dest-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: 68px; }
   .two-col { grid-template-columns: minmax(0, 1fr); min-height: 0; }
   .art-lg { width: 160px; height: 160px; }
-  .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .set-row { flex-wrap: wrap; }
   .seg span { padding: 10px 12px; }
   .map-tools { top: auto; bottom: 22px; }

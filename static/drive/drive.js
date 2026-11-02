@@ -7,14 +7,12 @@
  *   mapView  – Leaflet map with follow mode
  *   media    – local files + internet radio, wired to Media Session (steering-wheel keys)
  *   phone    – favorites, dial pad, tel:/sms: hand-off to the phone
- *   markets  – the NatGas bot signal from this Flask app
  *   voice    – speech recognition + a small command parser, spoken replies
  *   safety   – locks typing while the car is moving
  */
 (() => {
   'use strict';
 
-  const CFG = window.DRIVEDECK || {};
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
   const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
@@ -870,50 +868,6 @@
     },
   };
 
-  // ------------------------------------------------------------------ NatGas signal
-  const markets = {
-    data: null,
-    error: null,
-    at: 0,
-    loading: false,
-    async refresh() {
-      if (!CFG.signalUrl || this.loading) return;
-      this.loading = true;
-      bus.emit('markets');
-      try {
-        const res = await fetch(CFG.signalUrl, { headers: { Accept: 'application/json' } });
-        const j = await res.json().catch(() => ({ ok: false, error: `Server returned ${res.status}` }));
-        if (!j.ok) throw new Error(j.error || 'Signal unavailable');
-        this.data = j;
-        this.error = null;
-      } catch (e) {
-        this.error = e.message || String(e);
-      } finally {
-        this.at = Date.now();
-        this.loading = false;
-        bus.emit('markets');
-      }
-    },
-    async refreshIfStale() {
-      if (Date.now() - this.at > 5 * 60e3) await this.refresh();
-    },
-    shortAction() {
-      const a = this.data?.action || '';
-      if (a.startsWith('BUY')) return 'BUY';
-      if (a.startsWith('SELL')) return 'SELL';
-      return a ? 'WAIT' : '';
-    },
-    summary() {
-      if (!this.data) return this.error ? `I couldn't load the NatGas signal: ${this.error}` : 'The NatGas signal is still loading.';
-      const d = this.data;
-      const act = this.shortAction();
-      const conf = d.confidence != null ? `${Math.round(d.confidence * 100)} percent` : 'unknown';
-      const price = d.price != null ? `Natural gas is at ${d.price.toFixed(3)}. ` : '';
-      const call = act === 'WAIT' ? 'The bot says wait, no trade right now.' : `The bot says ${act.toLowerCase()} with ${conf} confidence.`;
-      return `${price}${call} Daily bias is ${String(d.bias || '').toLowerCase()}, and the market is ${String(d.regime || '').toLowerCase().replace('/', 'or')}.`;
-    },
-  };
-
   // ------------------------------------------------------------------ driving lock
   const safety = {
     moving: false,
@@ -957,7 +911,7 @@
   };
 
   // ------------------------------------------------------------------ voice commands
-  const VIEW_ALIASES = { home: 'home', map: 'map', maps: 'map', navigation: 'map', music: 'music', audio: 'music', radio: 'music', phone: 'phone', market: 'markets', markets: 'markets', natgas: 'markets', settings: 'settings', setup: 'settings' };
+  const VIEW_ALIASES = { home: 'home', map: 'map', maps: 'map', navigation: 'map', music: 'music', audio: 'music', radio: 'music', phone: 'phone', settings: 'settings', setup: 'settings' };
 
   const commands = {
     reply(msg) {
@@ -970,7 +924,7 @@
       let m;
       if (!text) return;
 
-      if ((m = text.match(/^(?:open|show|go to|switch to)(?: the)? (home|maps?|navigation|music|audio|radio|phone|markets?|natgas|settings|setup)(?: (?:screen|app|page))?$/))) {
+      if ((m = text.match(/^(?:open|show|go to|switch to)(?: the)? (home|maps?|navigation|music|audio|radio|phone|settings|setup)(?: (?:screen|app|page))?$/))) {
         ui.show(VIEW_ALIASES[m[1]]);
         return;
       }
@@ -990,17 +944,12 @@
       if (/^(?:previous|back|go back)(?: (?:song|track|station))?$/.test(text)) { media.prev(); return; }
       if (/^(?:play|resume|unpause)(?: (?:the )?(?:music|audio|radio|something))?$/.test(text)) { media.play(); return; }
       if ((m = text.match(/^play (.+)$/))) { media.playByVoice(m[1], reply); return; }
-      if (/(nat ?gas|natural gas|gas (?:signal|price|market)|the market|signal|should i (?:buy|sell)|trade)/.test(text)) {
-        await markets.refreshIfStale();
-        reply(markets.summary());
-        return;
-      }
       if (/(weather|temperature|outside|raining|snowing|cold|hot)/.test(text)) { reply(weather.sentence()); return; }
       if (/(what time|the time|what's the time)/.test(text)) { reply(`It's ${fmt.time(new Date())}.`); return; }
       if (/(how fast|my speed|what speed)/.test(text)) { reply(`You're doing ${fmt.speed(gps.pos?.speed)} ${imperial() ? 'miles per hour' : 'kilometers per hour'}.`); return; }
       if (/(night|dark) (?:mode|theme)/.test(text)) { setSetting('theme', 'night'); reply('Night mode on.'); return; }
       if (/(day|light) (?:mode|theme)/.test(text)) { setSetting('theme', 'day'); reply('Day mode on.'); return; }
-      reply(`Sorry, I didn't get “${raw}”. Try “navigate to…”, “play”, “call…”, or “gas signal”.`);
+      reply(`Sorry, I didn't get “${raw}”. Try “navigate to…”, “play”, “call…”, or “what's the weather”.`);
     },
     async navigateTo(target) {
       const t = target.replace(/^(?:the|a)\s+/, '').trim();
@@ -1330,35 +1279,6 @@
     $('#dialOut').textContent = phone.dial;
   }
 
-  function renderMarkets() {
-    const d = markets.data;
-    const act = markets.shortAction();
-    const ga = $('#gasAction');
-    ga.dataset.action = act || 'none';
-    ga.textContent = act || '–';
-    $('#gasSub').textContent = d
-      ? `${d.price != null ? d.price.toFixed(3) : '–'} · ${d.confidence != null ? Math.round(d.confidence * 100) : '–'}% conf.`
-      : (markets.loading ? 'Loading signal…' : (markets.error ? 'Signal unavailable' : '–'));
-
-    $('#gasHero').dataset.action = act || 'none';
-    $('#gasHero').textContent = act || (markets.loading ? '…' : '–');
-    $('#gasPrice').textContent = d?.price != null ? d.price.toFixed(3) : '–';
-    const conf = d?.confidence != null ? Math.round(d.confidence * 100) : null;
-    $('#gasConfBar').style.width = `${conf ?? 0}%`;
-    $('#gasConf').textContent = conf != null ? `Confidence ${conf}%${act === 'WAIT' ? ' · no trade' : ''}` : 'Confidence –';
-    $('#gasBias').textContent = d?.bias || '–';
-    $('#gasRegime').textContent = d?.regime || '–';
-    $('#gasQuality').textContent = d?.move_quality || '–';
-    $('#gasRsi').textContent = d?.rsi != null ? d.rsi.toFixed(0) : '–';
-    $('#gasStop').textContent = d?.stop_loss != null && act !== 'WAIT' ? d.stop_loss.toFixed(3) : '–';
-    $('#gasTp').textContent = d?.take_profit != null && act !== 'WAIT' ? d.take_profit.toFixed(3) : '–';
-    $('#gasUpdated').textContent = d?.timestamp ? `Candle ${d.timestamp} UTC` : '';
-    const err = $('#gasError');
-    err.hidden = !markets.error;
-    err.textContent = markets.error ? `Couldn't refresh: ${markets.error}` : '';
-    $('#gasRefresh').textContent = markets.loading ? 'Refreshing…' : 'Refresh';
-  }
-
   function renderWeather() {
     const w = weather.data;
     const chip = $('#tempChip');
@@ -1532,10 +1452,6 @@
       phone.call(phone.dial);
     });
 
-    // NatGas
-    $('#gasSpeak').addEventListener('click', () => commands.reply(markets.summary()));
-    $('#gasRefresh').addEventListener('click', () => markets.refresh());
-
     // Settings
     $('#view-settings').addEventListener('change', (e) => {
       const el = e.target;
@@ -1576,10 +1492,7 @@
     // System
     window.addEventListener('online', renderNet);
     window.addEventListener('offline', renderNet);
-    document.addEventListener('visibilitychange', () => {
-      wake.sync();
-      if (document.visibilityState === 'visible') markets.refreshIfStale();
-    });
+    document.addEventListener('visibilitychange', () => wake.sync());
     document.addEventListener('pointerdown', () => wake.sync(), { once: true });
   }
 
@@ -1595,7 +1508,7 @@
       }
     });
     bus.on('gps-status', () => { renderGpsStatus(); renderSpeed(); });
-    bus.on('view', (v) => { if (v === 'map') mapView.onShow(); if (v === 'markets') markets.refreshIfStale(); });
+    bus.on('view', (v) => { if (v === 'map') mapView.onShow(); });
     bus.on('routing', (dest) => {
       $('#routeCard').hidden = false;
       $('#routeName').textContent = dest.name;
@@ -1617,7 +1530,6 @@
     bus.on('places', () => { renderHomeNav(); renderSettings(); });
     bus.on('media', renderMedia);
     bus.on('media-time', renderMediaTime);
-    bus.on('markets', renderMarkets);
     bus.on('weather', renderWeather);
     bus.on('settings', () => {
       renderSettings();
@@ -1641,21 +1553,18 @@
     renderHomeNav();
     renderMedia();
     renderPhone();
-    renderMarkets();
     renderWeather();
     renderSettings();
     safety.apply();
 
     setInterval(renderClock, 1000);
     setInterval(() => { if (state.settings.theme === 'auto') ui.applyTheme(); }, 60e3);
-    setInterval(() => { if (document.visibilityState === 'visible') markets.refresh(); }, 5 * 60e3);
 
     gps.start();
-    markets.refresh();
     wake.sync();
 
     // Debug/test hook (harmless in production).
-    window.DriveDeck = { state, gps, sim, nav, media, markets, commands, ui, weather, setSetting };
+    window.DriveDeck = { state, gps, sim, nav, media, commands, ui, weather, setSetting };
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

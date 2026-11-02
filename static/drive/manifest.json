@@ -1,7 +1,7 @@
 {
   "name": "DriveDeck",
   "short_name": "DriveDeck",
-  "description": "In-car dashboard: maps with turn-by-turn, audio, phone, voice commands and the NatGas bot signal.",
+  "description": "In-car dashboard: maps with turn-by-turn, audio, phone and voice commands.",
   "start_url": "/drive",
   "scope": "/drive",
   "display": "fullscreen",

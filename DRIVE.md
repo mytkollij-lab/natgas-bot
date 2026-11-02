@@ -4,14 +4,13 @@ DriveDeck is a head-unit style screen for the car. It runs in the browser at **`
 
 | Screen | What it does |
 | --- | --- |
-| **Home** | Big speedometer (GPS), heading, trip meter, quick destinations, now playing, local weather, NatGas signal |
+| **Home** | Big speedometer (GPS), heading, trip meter, quick destinations, now playing, local weather |
 | **Maps** | OpenStreetMap with follow mode, place search, routing, **spoken turn-by-turn directions with automatic rerouting**, and hand-off to Google Maps, Waze or Apple Maps |
 | **Audio** | Plays music files from the device and internet radio streams. Bluetooth and steering-wheel buttons work through the Media Session API, and music is lowered while directions are spoken |
 | **Phone** | Favorites and a dial pad. Calls and texts are handed to the phone through `tel:` and `sms:` links |
-| **NatGas** | The bot's BUY / SELL / WAIT signal from `/api/drive/signal`, which it can read aloud |
 | **Setup** | Units, Day/Night/Auto theme (Auto follows actual daylight), voice options, keep-screen-on, passenger mode, and a **simulated drive** for testing at your desk |
 
-**Voice commands** use the mic button: *navigate to …*, *take me home*, *how long until we arrive*, *stop navigation*, *play*, *pause*, *next*, *play &lt;station&gt;*, *call &lt;name&gt;*, *text &lt;name&gt;*, *gas signal*, *what's the weather*, *open maps*, *night mode*.
+**Voice commands** use the mic button: *navigate to …*, *take me home*, *how long until we arrive*, *stop navigation*, *play*, *pause*, *next*, *play &lt;station&gt;*, *call &lt;name&gt;*, *text &lt;name&gt;*, *what's the weather*, *open maps*, *night mode*.
 
 **Driving lock:** above about 10 km/h (6 mph), typing is disabled and the screen asks you to use your voice. Passenger mode turns this off.
 
@@ -37,7 +36,7 @@ These public servers are fine for personal use, but they have fair-use limits an
 ## Files
 
 ```
-app.py                         /drive page + /api/drive/signal JSON
+app.py                         serves the /drive page
 templates/drive.html           screen layout
 static/drive/drive.css         styling (night + day themes, landscape + portrait)
 static/drive/drive.js          all logic: GPS, nav, voice, audio, phone, safety lock
@@ -51,4 +50,4 @@ CarPlay itself is a closed protocol (iAP2 plus streamed H.264 video). The car si
 
 If you want real CarPlay on a DIY screen as well, the legitimate route is a licensed **USB CarPlay adapter** (for example a Carlinkit dongle, which contains the MFi chip) together with an open-source host app such as *react-carplay* / *node-carplay* on the Pi. That runs Apple's own CarPlay UI, so you can't customise it the way you can DriveDeck.
 
-> Safety: set up destinations, favorites and stations before you drive. Use voice while moving. NatGas signals are not financial advice, and you shouldn't trade while driving.
+> Safety: set up destinations, favorites and stations before you drive. Use voice while moving.
