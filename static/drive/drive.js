@@ -25,7 +25,7 @@
   const STORE_KEY = 'drivedeck:v1';
   const guessUnits = () => (/-(US|GB|LR|MM)$/i.test(navigator.language || '') ? 'imperial' : 'metric');
   const DEFAULTS = {
-    settings: { units: guessUnits(), theme: 'auto', voiceGuidance: true, wakeLock: true, passenger: false, simulate: false, speechRate: 1 },
+    settings: { units: guessUnits(), theme: 'night', voiceGuidance: true, wakeLock: true, passenger: false, simulate: false, speechRate: 1 },
     favorites: [],
     stations: [],
     places: { home: null, work: null },
@@ -40,7 +40,9 @@
       Object.assign(s.settings, raw.settings || {});
       for (const k of ['favorites', 'stations', 'recents']) if (Array.isArray(raw[k])) s[k] = raw[k];
       if (raw.places && typeof raw.places === 'object') Object.assign(s.places, raw.places);
+      if (!raw.v && s.settings.theme === 'auto') s.settings.theme = 'night'; // v2 look defaults to night
     }
+    s.v = 2;
     s.settings.simulate = false; // never resume a simulated drive on reload
     return s;
   }
@@ -168,7 +170,9 @@
         const isDay = weather.isDay != null ? weather.isDay : hour >= 7 && hour < 19;
         theme = isDay ? 'day' : 'night';
       }
+      const changed = document.documentElement.dataset.theme !== theme;
       document.documentElement.dataset.theme = theme;
+      if (changed) { mapView.onTheme(); homeMap.onTheme(); }
       const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
       const meta = $('meta[name="theme-color"]');
       if (meta && bg) meta.content = bg;
@@ -598,9 +602,12 @@
       const step = idx >= 0 ? r.steps[idx] : null;
       const dist = step ? step.at - this.progress : remaining;
       const remainingSec = r.total > 0 ? r.duration * (remaining / r.total) : 0;
+      const stepStart = idx > 0 ? r.steps[idx - 1].at : 0;
+      const span = step ? step.at - stepStart : 0;
       this.lastUpdate = {
         step, then: idx >= 0 ? r.steps[idx + 1] || null : null, dist, remaining, remainingSec,
         arrival: new Date(Date.now() + remainingSec * 1000),
+        frac: span > 0 ? clamp((this.progress - stepStart) / span, 0, 1) : 0,
       };
 
       if (this.active && (remaining < 25 || (!step && remaining < 60))) {
@@ -650,12 +657,49 @@
   }
 
   // ------------------------------------------------------------------ map
+  const TILES = {
+    night: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    day: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+  };
+  const TILE_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> '
+    + '&copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>';
+  const themeName = () => (document.documentElement.dataset.theme === 'day' ? 'day' : 'night');
+  const CAR_HTML = '<div class="car"><svg viewBox="0 0 24 24"><path d="M12 2.5l7.5 18.5-7.5-4.2-7.5 4.2z"/></svg></div>';
+
+  function carMarker(ll) {
+    return L.marker(ll, {
+      icon: L.divIcon({ className: 'car-icon', html: CAR_HTML, iconSize: [52, 52], iconAnchor: [26, 26] }),
+      interactive: false,
+      keyboard: false,
+      zIndexOffset: 1000,
+    });
+  }
+  function rotateCar(marker, heading) {
+    const el = marker && marker.getElement();
+    const car = el && el.querySelector('.car');
+    if (car) car.style.transform = `rotate(${heading || 0}deg)`;
+  }
+  // Blue route with a dark casing, red destination pin. Returns the layers so callers can remove them.
+  function paintRoute(map, route, dest) {
+    const layers = [];
+    if (!route) return { layers, core: null };
+    const css = getComputedStyle(document.documentElement);
+    const blue = css.getPropertyValue('--blue').trim() || '#2f7bff';
+    const red = css.getPropertyValue('--red-2').trim() || '#ff2b3e';
+    const opts = { interactive: false, lineCap: 'round', lineJoin: 'round' };
+    const add = (layer) => { layer.addTo(map); layers.push(layer); return layer; };
+    add(L.polyline(route.coords, { ...opts, color: '#0a2766', weight: 12, opacity: 0.9 }));
+    const core = add(L.polyline(route.coords, { ...opts, color: blue, weight: 7, opacity: 1 }));
+    if (dest) add(L.circleMarker([dest.lat, dest.lon], { interactive: false, radius: 9, color: '#ffffff', weight: 3, fillColor: red, fillOpacity: 1 }));
+    return { layers, core };
+  }
+
   const mapView = {
     map: null,
+    tiles: null,
     car: null,
     line: null,
-    casing: null,
-    destMarker: null,
+    routeLayers: [],
     follow: true,
     init() {
       if (this.map) return true;
@@ -666,10 +710,7 @@
         center: p ? [p.lat, p.lon] : [39.5, -98.35],
         zoom: p ? 16 : 4,
       });
-      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19,
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
-      }).addTo(this.map);
+      this.tiles = L.tileLayer(TILES[themeName()], { maxZoom: 20, subdomains: 'abcd', attribution: TILE_ATTR }).addTo(this.map);
       this.map.on('dragstart', () => this.setFollow(false));
       if (p) this.updateCar(p);
       if (nav.route) this.drawRoute(nav.route, nav.dest);
@@ -689,43 +730,85 @@
       if (!this.map || p.lat == null) return;
       const ll = [p.lat, p.lon];
       if (!this.car) {
-        this.car = L.marker(ll, {
-          icon: L.divIcon({
-            className: 'car-icon',
-            html: '<div class="car"><svg viewBox="0 0 24 24"><path d="M12 2.5l7.5 18.5-7.5-4.2-7.5 4.2z"/></svg></div>',
-            iconSize: [44, 44],
-            iconAnchor: [22, 22],
-          }),
-          interactive: false,
-          keyboard: false,
-          zIndexOffset: 1000,
-        }).addTo(this.map);
+        this.car = carMarker(ll).addTo(this.map);
         if (this.follow && ui.view === 'map') this.map.setView(ll, 16);
       } else {
         this.car.setLatLng(ll);
       }
-      const el = this.car.getElement();
-      const car = el && el.querySelector('.car');
-      if (car) car.style.transform = `rotate(${p.heading || 0}deg)`;
+      rotateCar(this.car, p.heading);
       if (this.follow && ui.view === 'map') this.map.panTo(ll, { animate: true, duration: 0.8 });
     },
-    drawRoute(route, dest) {
+    onTheme() {
       if (!this.map) return;
-      [this.line, this.casing, this.destMarker].forEach((l) => l && l.remove());
-      this.line = this.casing = this.destMarker = null;
+      this.tiles.setUrl(TILES[themeName()]);
+      if (nav.route) this.drawRoute(nav.route, nav.dest, { fit: false });
+    },
+    drawRoute(route, dest, { fit = true } = {}) {
+      if (!this.map) return;
+      this.routeLayers.forEach((l) => l.remove());
+      this.routeLayers = [];
+      this.line = null;
       if (!route) return;
-      const css = getComputedStyle(document.documentElement);
-      this.casing = L.polyline(route.coords, { color: '#0b1220', weight: 12, opacity: 0.55, interactive: false }).addTo(this.map);
-      this.line = L.polyline(route.coords, { color: css.getPropertyValue('--accent').trim() || '#ffb020', weight: 7, opacity: 0.95, interactive: false }).addTo(this.map);
-      if (dest) {
-        this.destMarker = L.circleMarker([dest.lat, dest.lon], {
-          radius: 10, color: '#ffffff', weight: 3, fillColor: css.getPropertyValue('--stop').trim() || '#f2555a', fillOpacity: 1,
-        }).addTo(this.map);
-      }
-      if (ui.view === 'map' && !nav.active) {
+      const painted = paintRoute(this.map, route, dest);
+      this.routeLayers = painted.layers;
+      this.line = painted.core;
+      if (fit && ui.view === 'map' && !nav.active) {
         this.setFollow(false);
         this.map.fitBounds(this.line.getBounds(), { padding: [60, 60], paddingBottomRight: [60, 220] });
       }
+    },
+  };
+
+  // Dashboard mini-map: follows you, shows the active route, tap to open Maps.
+  const homeMap = {
+    map: null,
+    tiles: null,
+    car: null,
+    layers: [],
+    init() {
+      if (this.map) return true;
+      const el = $('#homeMap');
+      if (!el || !window.L) return false;
+      const p = gps.pos && gps.pos.lat != null ? gps.pos : null;
+      this.map = L.map(el, {
+        zoomControl: false, dragging: false, touchZoom: false, scrollWheelZoom: false,
+        doubleClickZoom: false, boxZoom: false, keyboard: false,
+        center: p ? [p.lat, p.lon] : [39.5, -98.35],
+        zoom: p ? 15 : 3,
+      });
+      this.tiles = L.tileLayer(TILES[themeName()], { maxZoom: 20, subdomains: 'abcd', attribution: TILE_ATTR }).addTo(this.map);
+      this.map.on('click', () => ui.show('map'));
+      el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') ui.show('map'); });
+      if (p) this.update(p);
+      if (nav.route) this.drawRoute(nav.route, nav.dest);
+      return true;
+    },
+    onShow() {
+      if (!this.init()) return;
+      this.map.invalidateSize();
+      if (gps.pos && gps.pos.lat != null) this.map.setView([gps.pos.lat, gps.pos.lon], Math.max(this.map.getZoom(), 15), { animate: false });
+    },
+    update(p) {
+      if (!this.map || p.lat == null) return;
+      const ll = [p.lat, p.lon];
+      if (!this.car) {
+        this.car = carMarker(ll).addTo(this.map);
+        this.map.setView(ll, 15, { animate: false });
+      } else {
+        this.car.setLatLng(ll);
+      }
+      rotateCar(this.car, p.heading);
+      if (ui.view === 'home') this.map.panTo(ll, { animate: true, duration: 0.8 });
+    },
+    drawRoute(route, dest) {
+      if (!this.map) return;
+      this.layers.forEach((l) => l.remove());
+      this.layers = paintRoute(this.map, route, dest).layers;
+    },
+    onTheme() {
+      if (!this.map) return;
+      this.tiles.setUrl(TILES[themeName()]);
+      if (nav.route) this.drawRoute(nav.route, nav.dest);
     },
   };
 
@@ -1049,7 +1132,6 @@
         break;
       case 'theme':
         ui.applyTheme();
-        if (mapView.line && nav.route) mapView.drawRoute(nav.route, nav.dest);
         break;
       case 'wakeLock':
         wake.sync();
@@ -1092,8 +1174,50 @@
     chip.querySelector('span').textContent = on ? 'Online' : 'Offline';
   }
 
+  const GAUGE_LEN = 2 * Math.PI * 128; // circumference of the dial (r = 128 in the SVG)
+  let gaugeUnits = null;
+  const gaugeScale = () => (imperial() ? { max: 120, major: 20, minor: 10 } : { max: 200, major: 40, minor: 10 });
+  let gaugeOverride = null; // forces the needle position during the start-up sweep
+  function buildGaugeTicks() {
+    const g = $('#gaugeTicks');
+    if (!g) return;
+    const { max, major, minor } = gaugeScale();
+    let html = '';
+    for (let v = 0; v <= max; v += minor) {
+      const a = toRad(135 + (270 * v) / max);
+      const isMajor = v % major === 0;
+      const red = v / max >= 0.8 ? ' red' : '';
+      const x = (r) => (150 + r * Math.cos(a)).toFixed(1);
+      const y = (r) => (150 + r * Math.sin(a)).toFixed(1);
+      const r1 = isMajor ? 103 : 109;
+      html += `<line class="g-tick${isMajor ? ' major' : ''}${red}" x1="${x(r1)}" y1="${y(r1)}" x2="${x(116)}" y2="${y(116)}"/>`;
+      if (isMajor) html += `<text class="g-label${red}" x="${x(89)}" y="${y(89)}">${v}</text>`;
+    }
+    g.innerHTML = html;
+    gaugeUnits = state.settings.units;
+  }
+  function renderGauge(ms) {
+    if (!$('#gaugeArc')) return;
+    if (gaugeUnits !== state.settings.units) buildGaugeTicks();
+    const v = Math.max(0, (ms || 0) * (imperial() ? 2.23694 : 3.6));
+    const f = gaugeOverride != null ? gaugeOverride : clamp(v / gaugeScale().max, 0, 1);
+    $('#gaugeArc').style.strokeDasharray = `${(GAUGE_LEN * 0.75 * f).toFixed(2)} ${GAUGE_LEN.toFixed(2)}`;
+    $('#gaugeTip').style.transform = `rotate(${135 + 270 * f}deg)`;
+  }
+  // Like a real cluster on ignition: needle sweeps to the stop and back.
+  function gaugeSweep() {
+    const tile = $('.tile-speed');
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (!tile || reduce) return;
+    tile.classList.add('sweeping');
+    setTimeout(() => { gaugeOverride = 1; renderSpeed(); }, 250);
+    setTimeout(() => { gaugeOverride = null; renderSpeed(); }, 1100);
+    setTimeout(() => tile.classList.remove('sweeping'), 1950);
+  }
+
   function renderSpeed() {
     const p = gps.pos;
+    renderGauge(p?.speed);
     $('#speedVal').textContent = fmt.speed(p?.speed);
     $('#speedUnit').textContent = fmt.speedUnit();
     $('#headingVal').textContent = p?.heading != null ? `${compass(p.heading)} ${Math.round(p.heading)}°` : '–';
@@ -1108,7 +1232,7 @@
   }
 
   function destButton(kind, place, iconName, title) {
-    const sub = place ? (place.detail || place.name) : 'Not set, tap to search';
+    const sub = place ? (place.detail || place.name) : 'Tap to set';
     return `<button class="dest" data-dest="${kind}">${icon(iconName)}<span class="dest-text"><span class="dest-name">${esc(title)}</span><span class="dest-sub">${esc(sub)}</span></span></button>`;
   }
 
@@ -1118,28 +1242,25 @@
       const u = nav.lastUpdate;
       const ic = stepIcon(u?.step);
       box.innerHTML = `
-        <div class="label">Navigating to ${esc(nav.dest?.name || '')}</div>
         <div class="nav-live">
-          <div class="nav-live-top">
-            <svg class="ic" style="transform:rotate(${ic.rot}deg)"><use href="#i-${ic.name}"/></svg>
-            <div>
-              <div class="nav-live-dist">${u ? fmt.dist(u.dist) : '–'}</div>
-              <div class="nav-live-text">${esc(u?.step?.text || 'Starting…')}</div>
-            </div>
+          <span class="nav-live-icon"><svg class="ic" style="transform:rotate(${ic.rot}deg)"><use href="#i-${ic.name}"/></svg></span>
+          <div class="nav-live-body">
+            <div class="nav-live-dist">${u ? fmt.dist(u.dist) : '–'}</div>
+            <div class="nav-live-text">${esc(u?.step?.text || 'Starting…')}</div>
+            <div class="nav-live-meta">${esc(nav.dest?.name || '')}${u ? ` · arrive ${fmt.time(u.arrival)} · ${fmt.dist(u.remaining)}` : ''}</div>
           </div>
-          <div class="nav-live-meta">${u ? `Arrive ${fmt.time(u.arrival)} · ${fmt.dist(u.remaining)} · ${fmt.duration(u.remainingSec)}` : ''}</div>
         </div>`;
       return;
     }
     const parts = [
+      `<button class="dest dest-search" data-dest="search">${icon('search')}<span class="dest-text"><span class="dest-name">Where to?</span><span class="dest-sub">Search or tap the mic</span></span></button>`,
       destButton('home', state.places.home, 'home', 'Home'),
       destButton('work', state.places.work, 'work', 'Work'),
     ];
-    state.recents.slice(0, 3).forEach((d, i) => {
+    state.recents.slice(0, 4).forEach((d, i) => {
       parts.push(`<button class="dest" data-dest="recent:${i}">${icon('clock')}<span class="dest-text"><span class="dest-name">${esc(d.name)}</span><span class="dest-sub">${esc(d.detail || '')}</span></span></button>`);
     });
-    parts.push(`<button class="dest dest-search" data-dest="search">${icon('search')}<span class="dest-text"><span class="dest-name">Search</span><span class="dest-sub">Find a place</span></span></button>`);
-    box.innerHTML = `<div class="label">Where to?</div><div class="dest-grid" id="destGrid">${parts.join('')}</div>`;
+    box.innerHTML = `<div class="dest-row">${parts.join('')}</div>`;
   }
 
   function renderGuide() {
@@ -1162,6 +1283,7 @@
     }
     $('#guideArrive').textContent = u ? fmt.time(u.arrival) : '--:--';
     $('#guideLeft').textContent = u ? `${fmt.dist(u.remaining)} · ${fmt.duration(u.remainingSec)}` : '';
+    $('#guideBar').style.transform = `scaleX(${u ? u.frac.toFixed(3) : 0})`;
   }
 
   function renderRouteCard() {
@@ -1209,6 +1331,7 @@
   function renderMedia() {
     const it = media.current;
     const playing = !media.audio.paused && !!it;
+    document.body.classList.toggle('is-playing', playing);
     $$('[data-media="toggle"] use').forEach((u) => u.setAttribute('href', playing ? '#i-pause' : '#i-play'));
     for (const [art, title, sub] of [['#homeArt', '#homeTitle', '#homeSub'], ['#npArt', '#npTitle', '#npSub']]) {
       $(art).innerHTML = artFor(it);
@@ -1279,8 +1402,19 @@
     $('#dialOut').textContent = phone.dial;
   }
 
+  function weatherIcon(code, isDay) {
+    if (code == null) return 'cloud';
+    if (code <= 1) return isDay === false ? 'moon' : 'sun';
+    if (code <= 3) return 'cloud';
+    if (code === 45 || code === 48) return 'fog';
+    if ((code >= 71 && code <= 77) || code === 85 || code === 86) return 'snow';
+    if (code >= 95) return 'storm';
+    return 'rain';
+  }
+
   function renderWeather() {
     const w = weather.data;
+    $('#wxIcon use').setAttribute('href', `#i-${weatherIcon(w?.code, weather.isDay)}`);
     const chip = $('#tempChip');
     if (!w) {
       $('#wxTemp').textContent = '–';
@@ -1498,23 +1632,26 @@
 
   function subscribe() {
     bus.on('position', (p) => {
+      document.body.classList.toggle('is-moving', (p.speed || 0) > 1.5);
       renderSpeed();
       renderGpsStatus();
       safety.update(p);
       if (p.lat != null) {
         mapView.updateCar(p);
+        homeMap.update(p);
         nav.onPosition(p);
         weather.maybeRefresh(p);
       }
     });
     bus.on('gps-status', () => { renderGpsStatus(); renderSpeed(); });
-    bus.on('view', (v) => { if (v === 'map') mapView.onShow(); });
+    bus.on('view', (v) => { if (v === 'map') mapView.onShow(); if (v === 'home') homeMap.onShow(); });
     bus.on('routing', (dest) => {
       $('#routeCard').hidden = false;
       $('#routeName').textContent = dest.name;
       $('#routeMeta').textContent = 'Finding the best route…';
     });
     bus.on('route', (r) => {
+      homeMap.drawRoute(r, nav.dest);
       mapView.drawRoute(r, nav.dest);
       renderRouteCard();
       renderHomeNav();
@@ -1560,6 +1697,8 @@
     setInterval(renderClock, 1000);
     setInterval(() => { if (state.settings.theme === 'auto') ui.applyTheme(); }, 60e3);
 
+    homeMap.init();
+    gaugeSweep();
     gps.start();
     wake.sync();
 
