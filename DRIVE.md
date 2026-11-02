@@ -2,9 +2,11 @@
 
 DriveDeck is a head-unit style screen for the car. It runs in the browser at **`/drive`** and has no build step and no API keys.
 
+The look is a performance-car cockpit: a carbon-fibre dock of app tiles, graphite panels, and a chrome speedometer with a red zone whose needle sweeps on start-up. Night (carbon) is the default, and Day (brushed aluminium) is in Setup.
+
 | Screen | What it does |
 | --- | --- |
-| **Home** | Big speedometer (GPS), heading, trip meter, quick destinations, now playing, local weather |
+| **Home** | Live map card with quick destinations and weather, a speedometer (GPS) with heading and trip meter, and now playing |
 | **Maps** | OpenStreetMap with follow mode, place search, routing, **spoken turn-by-turn directions with automatic rerouting**, and hand-off to Google Maps, Waze or Apple Maps |
 | **Audio** | Plays music files from the device and internet radio streams. Bluetooth and steering-wheel buttons work through the Media Session API, and music is lowered while directions are spoken |
 | **Phone** | Favorites and a dial pad. Calls and texts are handed to the phone through `tel:` and `sms:` links |
@@ -26,12 +28,12 @@ DriveDeck is a head-unit style screen for the car. It runs in the browser at **`
 
 ## Services used (free, no keys)
 
-- Map tiles: OpenStreetMap (`tile.openstreetmap.org`)
+- Map tiles: CARTO basemaps (dark and light) built on OpenStreetMap data
 - Place search: Nominatim
 - Routing: OSRM public demo server (`router.project-osrm.org`)
 - Weather: Open-Meteo
 
-These public servers are fine for personal use, but they have fair-use limits and no uptime guarantee. For anything beyond one car, self-host OSRM and a tile server, or switch to a paid provider. The URLs are all in `static/drive/drive.js`.
+These public servers are fine for personal use, but they have fair-use limits and no uptime guarantee. CARTO's free basemaps are for non-commercial use. For anything beyond one car, self-host OSRM and a tile server, or switch to a paid provider. The URLs are all in `static/drive/drive.js`.
 
 ## Files
 
@@ -42,6 +44,7 @@ static/drive/drive.css         styling (night + day themes, landscape + portrait
 static/drive/drive.js          all logic: GPS, nav, voice, audio, phone, safety lock
 static/drive/manifest.json     installable app (start_url /drive, landscape, fullscreen)
 static/drive/vendor/leaflet/   Leaflet 1.9.4 map library (BSD-2-Clause), bundled locally
+static/drive/vendor/fonts/     Barlow + Barlow Semi Condensed (SIL Open Font License), bundled locally
 ```
 
 ## Why this isn't Apple CarPlay
