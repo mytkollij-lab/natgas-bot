@@ -176,6 +176,7 @@
             <form action="/refresh" method="post" style="display:inline;">
                 <button type="submit" class="btn-ghost">Refresh now</button>
             </form>
+            <a href="{{ url_for('drive') }}" class="btn-ghost" style="display:inline-block; margin-left:6px; text-decoration:none;">Drive mode</a>
             {% if timestamp %}
                 <div style="margin-top:8px;">Last market update: <span>{{ timestamp }}</span> UTC</div>
             {% endif %}

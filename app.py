@@ -5,7 +5,7 @@ import requests
 
 import pandas as pd
 import yfinance as yf
-from flask import Flask, render_template, request, redirect, url_for
+from flask import Flask, render_template, request, redirect, url_for, jsonify
 
 app = Flask(__name__)
 
@@ -910,6 +910,50 @@ def index():
         chart_data_json=json.dumps(chart_data) if chart_data else None,
         chart_error=chart_error,
         data_note="Data source: Yahoo Finance futures (NG=F). This can differ from Trading212 CFD pricing.",
+    )
+
+
+# ---------------------------------------------------------------------
+# DRIVEDECK — in-car head-unit mode (/drive)
+# ---------------------------------------------------------------------
+def _finite(x):
+    """Float or None (JSON has no NaN/Infinity)."""
+    try:
+        x = float(x)
+    except (TypeError, ValueError):
+        return None
+    return x if math.isfinite(x) else None
+
+
+@app.route("/drive")
+def drive():
+    return render_template("drive.html")
+
+
+@app.route("/api/drive/signal")
+def drive_signal():
+    """Compact NatGas signal for the in-car dashboard."""
+    feats, err = get_latest_features_cached()
+    if err or feats is None:
+        return jsonify({"ok": False, "error": err or "No market data available."}), 503
+
+    _, _, weather_score = get_weather_summary_cached()
+    decision = compute_action_and_plan(feats, weather_score, compute_crude_impact(feats))
+
+    return jsonify(
+        {
+            "ok": True,
+            "timestamp": feats["timestamp"],
+            "price": _finite(feats["last_price"]),
+            "action": decision["action"],
+            "confidence": _finite(decision["confidence"]),
+            "bias": decision["daily_bias"]["label"],
+            "regime": decision["market_regime"]["label"],
+            "move_quality": decision["move_quality"]["label"],
+            "stop_loss": _finite(decision["stop_loss"]),
+            "take_profit": _finite(decision["take_profit"]),
+            "rsi": _finite(feats["rsi"]),
+        }
     )
 
 
