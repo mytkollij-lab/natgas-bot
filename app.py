@@ -913,14 +913,6 @@ def index():
     )
 
 
-# ---------------------------------------------------------------------
-# DRIVEDECK — in-car head-unit mode (/drive)
-# ---------------------------------------------------------------------
-@app.route("/drive")
-def drive():
-    return render_template("drive.html")
-
-
 if __name__ == "__main__":
     # Local dev; on Render use gunicorn.
     app.run(host="0.0.0.0", port=8000, debug=True)
